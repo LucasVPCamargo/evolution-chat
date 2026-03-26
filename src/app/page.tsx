@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Plus, RefreshCw } from "lucide-react";
+import { useSession, signOut } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { Plus, RefreshCw, LogOut } from "lucide-react";
 import { ChipCard } from "@/components/chip-card";
 import { ConnectModal } from "@/components/connect-modal";
 import { StatsBar } from "@/components/stats-bar";
@@ -15,10 +17,24 @@ interface Chip {
 }
 
 export default function Dashboard() {
+  const { status } = useSession();
+  const router = useRouter();
   const [chips, setChips] = useState<Chip[]>([]);
   const [loading, setLoading] = useState(true);
   const [showConnect, setShowConnect] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    if (status === "unauthenticated") router.push("/login");
+  }, [status, router]);
+
+  if (status === "loading" || status === "unauthenticated") {
+    return (
+      <main className="flex min-h-screen items-center justify-center">
+        <RefreshCw className="h-6 w-6 animate-spin text-zinc-500" />
+      </main>
+    );
+  }
 
   const loadChips = useCallback(async () => {
     try {
@@ -76,6 +92,13 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex gap-3">
+          <button
+            onClick={() => signOut()}
+            className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-700"
+          >
+            <LogOut className="h-4 w-4" />
+            Sair
+          </button>
           <button
             onClick={handleRefresh}
             disabled={refreshing}
