@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { X, Loader2, Copy, Check } from "lucide-react";
+import { X, Loader2, Copy, Check, Shield, Wifi } from "lucide-react";
 
 interface ConnectModalProps {
   onClose: () => void;
@@ -15,10 +15,13 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [step, setStep] = useState("");
 
   async function handleConnect() {
     setLoading(true);
     setError(null);
+    setStep("Criando instancia...");
+
     try {
       const res = await fetch("/api/chips/connect", {
         method: "POST",
@@ -32,7 +35,10 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
         return;
       }
 
-      const code = data.pairingCode || data.connection?.pairingCode || data.connection?.code;
+      const code =
+        data.pairingCode ||
+        data.connection?.pairingCode ||
+        data.connection?.code;
       if (code) {
         setPairingCode(code);
       } else {
@@ -43,6 +49,7 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
       setError("Erro de conexao com o servidor");
     } finally {
       setLoading(false);
+      setStep("");
     }
   }
 
@@ -104,6 +111,13 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
               </p>
             </div>
 
+            <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-950/20 px-3 py-2">
+              <Shield className="h-4 w-4 shrink-0 text-emerald-400" />
+              <p className="text-xs text-emerald-300">
+                Proxy residencial brasileiro sera configurado automaticamente antes da conexao
+              </p>
+            </div>
+
             {error && (
               <p className="rounded-lg bg-red-900/30 px-3 py-2 text-sm text-red-400">
                 {error}
@@ -118,15 +132,33 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
               {loading ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  Configurando...
+                  {step || "Configurando..."}
                 </>
               ) : (
                 "Conectar Chip"
               )}
             </button>
+
+            {loading && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-xs text-zinc-400">
+                  <Wifi className="h-3 w-3" />
+                  <span>Criando instancia → Proxy → Pairing code → Chatwoot</span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800">
+                  <div className="h-full animate-pulse rounded-full bg-emerald-500/60" style={{ width: "60%" }} />
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="mt-5 space-y-4">
+            <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-950/20 px-3 py-2">
+              <Shield className="h-4 w-4 shrink-0 text-emerald-400" />
+              <p className="text-xs text-emerald-300">
+                Conectado via proxy residencial BR — IP protegido
+              </p>
+            </div>
             <p className="text-sm text-zinc-400">
               Digite este codigo no WhatsApp do celular:
             </p>
@@ -147,6 +179,9 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
             </div>
             <p className="text-xs text-zinc-500">
               No celular: WhatsApp &gt; Dispositivos conectados &gt; Conectar dispositivo &gt; Conectar com numero de telefone
+            </p>
+            <p className="text-xs text-amber-400">
+              Voce tem 40 segundos para usar o codigo antes de expirar
             </p>
             <button
               onClick={handleDone}

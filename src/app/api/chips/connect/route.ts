@@ -25,11 +25,13 @@ export async function POST(req: NextRequest) {
     // Step 1: Create instance
     const instance = await createInstance(name, number);
 
-    // Step 2: Generate pairing code
-    const connection = await connectInstance(name, number);
-
-    // Step 3: Configure proxy with unique sticky session
+    // Step 2: Configure proxy BEFORE connecting (prevents WhatsApp ban)
+    await new Promise((r) => setTimeout(r, 2000));
     const proxy = await setProxy(name);
+
+    // Step 3: Generate pairing code (now goes through proxy)
+    await new Promise((r) => setTimeout(r, 2000));
+    const connection = await connectInstance(name);
 
     // Step 4: Create Chatwoot inbox
     const inbox = await createInbox(name);

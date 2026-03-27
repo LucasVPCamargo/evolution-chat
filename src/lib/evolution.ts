@@ -14,17 +14,16 @@ export async function createInstance(name: string, number: string) {
       instanceName: name,
       integration: "WHATSAPP-BAILEYS",
       number,
-      qrcode: false,
+      qrcode: true,
     }),
   });
   return res.json();
 }
 
-export async function connectInstance(name: string, number: string) {
+export async function connectInstance(name: string) {
   const res = await fetch(`${API_URL}/instance/connect/${name}`, {
-    method: "POST",
+    method: "GET",
     headers,
-    body: JSON.stringify({ number }),
   });
   return res.json();
 }
