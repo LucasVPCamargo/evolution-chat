@@ -131,17 +131,18 @@ export default function Dashboard() {
 
   return (
     <main className="mx-auto max-w-6xl px-6 py-8">
+      {/* Header */}
       <div className="mb-8 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">Evolution Chat</h1>
-          <p className="text-sm text-zinc-500">
+          <h1 className="text-2xl font-bold tracking-tight text-white">Evolution Chat</h1>
+          <p className="mt-0.5 text-sm text-zinc-500">
             Gerenciamento de chips WhatsApp
           </p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex gap-2">
           <button
             onClick={() => signOut()}
-            className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-700"
+            className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-300"
           >
             <LogOut className="h-4 w-4" />
             Sair
@@ -149,7 +150,7 @@ export default function Dashboard() {
           <button
             onClick={handleRefresh}
             disabled={refreshing}
-            className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-700"
+            className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-300"
           >
             <RefreshCw
               className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`}
@@ -160,10 +161,10 @@ export default function Dashboard() {
             onClick={() => setShowConnect(true)}
             disabled={!health?.healthy}
             title={!health?.healthy ? "Servicos indisponiveis — verifique o status" : ""}
-            className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors ${
+            className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
               health?.healthy
-                ? "bg-emerald-600 hover:bg-emerald-500"
-                : "cursor-not-allowed bg-zinc-700 opacity-50"
+                ? "bg-emerald-600 text-white hover:bg-emerald-500"
+                : "cursor-not-allowed bg-zinc-800 text-zinc-600"
             }`}
           >
             <Plus className="h-4 w-4" />
@@ -172,20 +173,27 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="mb-8">
+      {/* Stats + Health */}
+      <div className="mb-6">
         <StatsBar total={chips.length} online={online} offline={offline} health={health} healthLoading={healthLoading} />
       </div>
 
+      {/* Chip Grid */}
       {loading ? (
         <div className="flex items-center justify-center py-20">
-          <RefreshCw className="h-6 w-6 animate-spin text-zinc-500" />
+          <RefreshCw className="h-6 w-6 animate-spin text-zinc-600" />
         </div>
       ) : chips.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-zinc-700 py-20">
+        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-zinc-800 bg-zinc-900/40 py-20">
           <p className="text-zinc-500">Nenhum chip conectado</p>
           <button
             onClick={() => setShowConnect(true)}
-            className="mt-4 flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-500"
+            disabled={!health?.healthy}
+            className={`mt-4 flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
+              health?.healthy
+                ? "bg-emerald-600 text-white hover:bg-emerald-500"
+                : "cursor-not-allowed bg-zinc-800 text-zinc-600"
+            }`}
           >
             <Plus className="h-4 w-4" />
             Conectar primeiro chip
