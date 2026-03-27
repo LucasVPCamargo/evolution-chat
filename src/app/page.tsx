@@ -24,18 +24,6 @@ export default function Dashboard() {
   const [showConnect, setShowConnect] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    if (status === "unauthenticated") router.push("/login");
-  }, [status, router]);
-
-  if (status === "loading" || status === "unauthenticated") {
-    return (
-      <main className="flex min-h-screen items-center justify-center">
-        <RefreshCw className="h-6 w-6 animate-spin text-zinc-500" />
-      </main>
-    );
-  }
-
   const loadChips = useCallback(async () => {
     try {
       const res = await fetch("/api/chips");
@@ -50,10 +38,23 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
+    if (status === "unauthenticated") router.push("/login");
+  }, [status, router]);
+
+  useEffect(() => {
+    if (status !== "authenticated") return;
     loadChips();
     const interval = setInterval(loadChips, 30000);
     return () => clearInterval(interval);
-  }, [loadChips]);
+  }, [status, loadChips]);
+
+  if (status === "loading" || status === "unauthenticated") {
+    return (
+      <main className="flex min-h-screen items-center justify-center">
+        <RefreshCw className="h-6 w-6 animate-spin text-zinc-500" />
+      </main>
+    );
+  }
 
   function handleRefresh() {
     setRefreshing(true);
