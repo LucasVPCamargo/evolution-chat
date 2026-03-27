@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { Plus, RefreshCw, LogOut } from "lucide-react";
+import { Plus, RefreshCw, LogOut, Copy, Check, X } from "lucide-react";
 import { ChipCard } from "@/components/chip-card";
 import { ConnectModal } from "@/components/connect-modal";
 import { StatsBar } from "@/components/stats-bar";
@@ -23,6 +23,9 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [showConnect, setShowConnect] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [reconnectCode, setReconnectCode] = useState<string | null>(null);
+  const [reconnectName, setReconnectName] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const loadChips = useCallback(async () => {
     try {
@@ -68,6 +71,32 @@ export default function Dashboard() {
       body: JSON.stringify({ action: "restart", name }),
     });
     setTimeout(loadChips, 3000);
+  }
+
+  async function handleReconnect(name: string) {
+    try {
+      const res = await fetch("/api/chips/reconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json();
+      const code = data.pairingCode;
+      if (code) {
+        setReconnectName(name);
+        setReconnectCode(code);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  function handleCopyCode() {
+    if (reconnectCode) {
+      navigator.clipboard.writeText(reconnectCode);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   }
 
   async function handleDelete(name: string) {
@@ -151,6 +180,7 @@ export default function Dashboard() {
               chatwoot={!!chip.Chatwoot?.enabled}
               onRestart={handleRestart}
               onDelete={handleDelete}
+              onReconnect={handleReconnect}
             />
           ))}
         </div>
@@ -161,6 +191,56 @@ export default function Dashboard() {
           onClose={() => setShowConnect(false)}
           onSuccess={loadChips}
         />
+      )}
+
+      {reconnectCode && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-white">
+                Reconectar {reconnectName}
+              </h2>
+              <button
+                onClick={() => { setReconnectCode(null); setReconnectName(null); }}
+                className="rounded-lg p-1 text-zinc-400 hover:bg-zinc-800"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="mt-5 space-y-4">
+              <p className="text-sm text-zinc-400">
+                Digite este codigo no WhatsApp do celular:
+              </p>
+              <div className="flex items-center justify-between rounded-lg border border-emerald-500/30 bg-emerald-950/30 px-4 py-3">
+                <span className="font-mono text-2xl font-bold tracking-widest text-emerald-400">
+                  {reconnectCode}
+                </span>
+                <button
+                  onClick={handleCopyCode}
+                  className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800"
+                >
+                  {copied ? (
+                    <Check className="h-5 w-5 text-emerald-400" />
+                  ) : (
+                    <Copy className="h-5 w-5" />
+                  )}
+                </button>
+              </div>
+              <p className="text-xs text-zinc-500">
+                No celular: WhatsApp &gt; Dispositivos conectados &gt; Conectar dispositivo &gt; Conectar com numero de telefone
+              </p>
+              <p className="text-xs text-amber-400">
+                Voce tem 40 segundos para usar o codigo antes de expirar
+              </p>
+              <button
+                onClick={() => { setReconnectCode(null); setReconnectName(null); loadChips(); }}
+                className="w-full rounded-lg bg-emerald-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500"
+              >
+                Pronto, Conectei!
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );

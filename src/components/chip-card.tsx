@@ -7,6 +7,7 @@ import {
   MessageSquare,
   Trash2,
   RotateCw,
+  Link,
 } from "lucide-react";
 
 interface ChipCardProps {
@@ -17,6 +18,7 @@ interface ChipCardProps {
   chatwoot: boolean;
   onRestart: (name: string) => void;
   onDelete: (name: string) => void;
+  onReconnect: (name: string) => void;
 }
 
 export function ChipCard({
@@ -27,8 +29,10 @@ export function ChipCard({
   chatwoot,
   onRestart,
   onDelete,
+  onReconnect,
 }: ChipCardProps) {
   const isOnline = status === "open";
+  const isClosed = status === "close";
 
   return (
     <div
@@ -79,6 +83,15 @@ export function ChipCard({
       </div>
 
       <div className="mt-4 flex gap-2">
+        {isClosed && (
+          <button
+            onClick={() => onReconnect(name)}
+            className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-500"
+          >
+            <Link className="h-3.5 w-3.5" />
+            Reconectar
+          </button>
+        )}
         <button
           onClick={() => onRestart(name)}
           className="flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-300 transition-colors hover:bg-zinc-700"
