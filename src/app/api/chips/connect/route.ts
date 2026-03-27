@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   createInstance,
-  connectInstance,
   setProxy,
   setChatwoot,
 } from "@/lib/evolution";
@@ -22,30 +21,25 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Step 1: Create instance
+    // Step 1: Create instance (qrcode:true already generates pairing code)
     const instance = await createInstance(name, number);
+    const pairingCode = instance?.qrcode?.pairingCode || null;
 
-    // Step 2: Configure proxy BEFORE connecting (prevents WhatsApp ban)
-    await new Promise((r) => setTimeout(r, 2000));
-    const proxy = await setProxy(name);
+    // Step 2: Configure proxy + Chatwoot in parallel (non-blocking)
+    const [proxy, inbox] = await Promise.all([
+      setProxy(name).catch(() => null),
+      createInbox(name).catch(() => null),
+    ]);
 
-    // Step 3: Generate pairing code (now goes through proxy)
-    await new Promise((r) => setTimeout(r, 2000));
-    const connection = await connectInstance(name);
-
-    // Step 4: Create Chatwoot inbox
-    const inbox = await createInbox(name);
-
-    // Step 5: Configure Chatwoot integration in Evolution
-    const chatwoot = await setChatwoot(name);
+    // Step 3: Configure Chatwoot integration in Evolution
+    const chatwoot = await setChatwoot(name).catch(() => null);
 
     return NextResponse.json({
       instance,
-      connection,
       proxy,
       inbox,
       chatwoot,
-      pairingCode: connection?.pairingCode || connection?.code,
+      pairingCode,
     });
   } catch (error) {
     return NextResponse.json(
