@@ -42,3 +42,17 @@ export async function deleteInbox(inboxId: number) {
   if (res.status === 200 || res.status === 204) return { success: true };
   return res.json();
 }
+
+export async function deleteInboxByName(chipName: string): Promise<number> {
+  const data = await listInboxes();
+  const inboxes = data.payload ?? data ?? [];
+  const matches = inboxes.filter(
+    (i: { name: string }) => i.name === `WhatsApp - ${chipName}`
+  );
+  let deleted = 0;
+  for (const inbox of matches) {
+    const result = await deleteInbox(inbox.id);
+    if ("success" in result) deleted++;
+  }
+  return deleted;
+}
