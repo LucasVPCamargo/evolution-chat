@@ -1,7 +1,25 @@
 "use client";
 
-import { useState } from "react";
-import { X, Loader2, Copy, Check, Shield, Wifi } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  X,
+  Loader2,
+  Copy,
+  Check,
+  Shield,
+  Wifi,
+  Server,
+  MessageSquare,
+  AlertTriangle,
+  CheckCircle2,
+} from "lucide-react";
+
+interface ServiceHealth {
+  service: string;
+  ok: boolean;
+  latencyMs: number;
+  detail?: string;
+}
 
 interface ConnectModalProps {
   onClose: () => void;
@@ -16,13 +34,55 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState("");
+  const [precheck, setPrecheck] = useState<"checking" | "ok" | "failed">("checking");
+  const [services, setServices] = useState<ServiceHealth[]>([]);
+
+  useEffect(() => {
+    runPrecheck();
+  }, []);
+
+  async function runPrecheck() {
+    setPrecheck("checking");
+    try {
+      const res = await fetch("/api/health");
+      const data = await res.json();
+      setServices(data.services || []);
+      setPrecheck(data.healthy ? "ok" : "failed");
+    } catch {
+      setPrecheck("failed");
+      setServices([]);
+    }
+  }
+
+  const serviceIcons: Record<string, typeof Server> = {
+    evolution: Server,
+    chatwoot: MessageSquare,
+    proxy: Shield,
+  };
+
+  const serviceLabels: Record<string, string> = {
+    evolution: "Evolution API",
+    chatwoot: "Chatwoot",
+    proxy: "Proxy BR",
+  };
 
   async function handleConnect() {
     setLoading(true);
     setError(null);
-    setStep("Criando instancia...");
+    setStep("Verificando servicos...");
 
     try {
+      // Fresh pre-check before connecting
+      const healthRes = await fetch("/api/health");
+      const healthData = await healthRes.json();
+      if (!healthData.healthy) {
+        setError("Servicos indisponiveis. Verifique o status e tente novamente.");
+        setServices(healthData.services || []);
+        setPrecheck("failed");
+        return;
+      }
+
+      setStep("Criando instancia e configurando proxy...");
       const res = await fetch("/api/chips/connect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -83,6 +143,50 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
 
         {!pairingCode ? (
           <div className="mt-5 space-y-4">
+            {/* Pre-check status */}
+            <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+              <p className="text-xs font-medium text-zinc-400">Pre-check dos servicos</p>
+              {precheck === "checking" ? (
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-zinc-500" />
+                  <span className="text-xs text-zinc-500">Verificando...</span>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {services.map((svc) => {
+                    const Icon = serviceIcons[svc.service] || Server;
+                    const label = serviceLabels[svc.service] || svc.service;
+                    return (
+                      <div key={svc.service} className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Icon className={`h-3.5 w-3.5 ${svc.ok ? "text-emerald-400" : "text-red-400"}`} />
+                          <span className={`text-xs ${svc.ok ? "text-emerald-300" : "text-red-300"}`}>{label}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          {svc.ok ? (
+                            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+                          ) : (
+                            <AlertTriangle className="h-3.5 w-3.5 text-red-400" />
+                          )}
+                          <span className={`text-xs ${svc.ok ? "text-emerald-500" : "text-red-500"}`}>
+                            {svc.ok ? `OK (${svc.latencyMs}ms)` : svc.detail || "Erro"}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {precheck === "failed" && (
+                    <button
+                      onClick={runPrecheck}
+                      className="mt-2 w-full rounded-lg border border-zinc-700 bg-zinc-800 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700"
+                    >
+                      Tentar novamente
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div>
               <label className="mb-1.5 block text-sm text-zinc-400">
                 Nome da instancia
@@ -92,7 +196,8 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
                 placeholder="chip03"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-white placeholder:text-zinc-500 focus:border-emerald-500 focus:outline-none"
+                disabled={precheck !== "ok"}
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-white placeholder:text-zinc-500 focus:border-emerald-500 focus:outline-none disabled:opacity-50"
               />
             </div>
             <div>
@@ -104,7 +209,8 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
                 placeholder="5511999999999"
                 value={number}
                 onChange={(e) => setNumber(e.target.value)}
-                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-white placeholder:text-zinc-500 focus:border-emerald-500 focus:outline-none"
+                disabled={precheck !== "ok"}
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-white placeholder:text-zinc-500 focus:border-emerald-500 focus:outline-none disabled:opacity-50"
               />
               <p className="mt-1 text-xs text-zinc-500">
                 Formato: DDI + DDD + numero (sem espacos ou tracos)
@@ -126,7 +232,7 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
 
             <button
               onClick={handleConnect}
-              disabled={loading || !name || !number}
+              disabled={loading || !name || !number || precheck !== "ok"}
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
             >
               {loading ? (

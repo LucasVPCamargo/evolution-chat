@@ -26,6 +26,8 @@ export default function Dashboard() {
   const [reconnectCode, setReconnectCode] = useState<string | null>(null);
   const [reconnectName, setReconnectName] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [health, setHealth] = useState<{ healthy: boolean; services: { service: string; ok: boolean; latencyMs: number; detail?: string; ip?: string; country?: string; city?: string }[]; timestamp: string } | null>(null);
+  const [healthLoading, setHealthLoading] = useState(true);
 
   const loadChips = useCallback(async () => {
     try {
@@ -40,6 +42,18 @@ export default function Dashboard() {
     }
   }, []);
 
+  const loadHealth = useCallback(async () => {
+    try {
+      const res = await fetch("/api/health");
+      const data = await res.json();
+      setHealth(data);
+    } catch {
+      setHealth(null);
+    } finally {
+      setHealthLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (status === "unauthenticated") router.push("/login");
   }, [status, router]);
@@ -47,9 +61,10 @@ export default function Dashboard() {
   useEffect(() => {
     if (status !== "authenticated") return;
     loadChips();
-    const interval = setInterval(loadChips, 30000);
+    loadHealth();
+    const interval = setInterval(() => { loadChips(); loadHealth(); }, 30000);
     return () => clearInterval(interval);
-  }, [status, loadChips]);
+  }, [status, loadChips, loadHealth]);
 
   if (status === "loading" || status === "unauthenticated") {
     return (
@@ -61,7 +76,9 @@ export default function Dashboard() {
 
   function handleRefresh() {
     setRefreshing(true);
+    setHealthLoading(true);
     loadChips();
+    loadHealth();
   }
 
   async function handleRestart(name: string) {
@@ -141,7 +158,13 @@ export default function Dashboard() {
           </button>
           <button
             onClick={() => setShowConnect(true)}
-            className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-500"
+            disabled={!health?.healthy}
+            title={!health?.healthy ? "Servicos indisponiveis — verifique o status" : ""}
+            className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors ${
+              health?.healthy
+                ? "bg-emerald-600 hover:bg-emerald-500"
+                : "cursor-not-allowed bg-zinc-700 opacity-50"
+            }`}
           >
             <Plus className="h-4 w-4" />
             Novo Chip
@@ -150,7 +173,7 @@ export default function Dashboard() {
       </div>
 
       <div className="mb-8">
-        <StatsBar total={chips.length} online={online} offline={offline} />
+        <StatsBar total={chips.length} online={online} offline={offline} health={health} healthLoading={healthLoading} />
       </div>
 
       {loading ? (
