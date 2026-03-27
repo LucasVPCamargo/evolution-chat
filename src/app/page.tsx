@@ -65,10 +65,10 @@ export default function Dashboard() {
   }
 
   async function handleRestart(name: string) {
-    await fetch("/api/chips/connect", {
+    await fetch("/api/chips/restart", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "restart", name }),
+      body: JSON.stringify({ name }),
     });
     setTimeout(loadChips, 3000);
   }
