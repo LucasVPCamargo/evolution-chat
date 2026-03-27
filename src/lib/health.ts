@@ -72,7 +72,7 @@ export async function checkProxy(): Promise<ServiceHealth> {
   const start = Date.now();
   try {
     const { ProxyAgent } = await import("undici");
-    const proxyUrl = `http://${process.env.PROXY_USERNAME}:${process.env.PROXY_PASSWORD}_country-br_session-healthcheck_lifetime-24h@${process.env.PROXY_HOST}:${process.env.PROXY_PORT}`;
+    const proxyUrl = `http://${process.env.PROXY_USERNAME}:${process.env.PROXY_PASSWORD}_country-br_session-healthcheck@${process.env.PROXY_HOST}:${process.env.PROXY_PORT}`;
     const agent = new ProxyAgent(proxyUrl);
 
     const res = await fetch("http://ip-api.com/json/?fields=status,country,countryCode,city,query", {

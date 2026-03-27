@@ -75,7 +75,7 @@ export async function setProxy(name: string) {
       port: process.env.PROXY_PORT!,
       protocol: process.env.PROXY_PROTOCOL || "http",
       username: process.env.PROXY_USERNAME!,
-      password: `${basePassword}_country-br_session-${name}_lifetime-24h`,
+      password: `${basePassword}_country-br_session-${name}`,
     }),
   });
   return res.json();
