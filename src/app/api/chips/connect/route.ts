@@ -21,26 +21,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Step 1: Create instance (qrcode:true already generates pairing code)
+    // Step 1: Create instance — returns pairing code immediately
     const instance = await createInstance(name, number);
     const pairingCode = instance?.qrcode?.pairingCode || null;
 
-    // Step 2: Configure proxy + Chatwoot in parallel (non-blocking)
-    const [proxy, inbox] = await Promise.all([
-      setProxy(name).catch(() => null),
-      createInbox(name).catch(() => null),
-    ]);
+    if (!pairingCode) {
+      return NextResponse.json(
+        { error: "Falha ao gerar codigo de pareamento", instance },
+        { status: 500 }
+      );
+    }
 
-    // Step 3: Configure Chatwoot integration in Evolution
-    const chatwoot = await setChatwoot(name).catch(() => null);
-
-    return NextResponse.json({
-      instance,
-      proxy,
-      inbox,
-      chatwoot,
-      pairingCode,
-    });
+    // Return pairing code ASAP — proxy/chatwoot configured via /api/chips/setup
+    return NextResponse.json({ pairingCode });
   } catch (error) {
     return NextResponse.json(
       { error: "Failed to connect chip", details: String(error) },

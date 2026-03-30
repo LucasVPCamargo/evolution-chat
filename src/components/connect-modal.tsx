@@ -82,7 +82,7 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
         return;
       }
 
-      setStep("Criando instancia e configurando proxy...");
+      setStep("Criando instancia...");
       const res = await fetch("/api/chips/connect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -95,15 +95,10 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
         return;
       }
 
-      const code =
-        data.pairingCode ||
-        data.connection?.pairingCode ||
-        data.connection?.code;
-      if (code) {
-        setPairingCode(code);
+      if (data.pairingCode) {
+        setPairingCode(data.pairingCode);
       } else {
-        onSuccess();
-        onClose();
+        setError("Nao foi possivel gerar o codigo de pareamento");
       }
     } catch {
       setError("Erro de conexao com o servidor");
@@ -121,7 +116,21 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
     }
   }
 
-  function handleDone() {
+  const [finishing, setFinishing] = useState(false);
+
+  async function handleDone() {
+    setFinishing(true);
+    try {
+      // Configure proxy + Chatwoot after user confirmed connection
+      await fetch("/api/chips/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+    } catch {
+      // Setup errors are non-fatal — chip is already connected
+    }
+    setFinishing(false);
     onSuccess();
     onClose();
   }
@@ -291,9 +300,17 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
             </p>
             <button
               onClick={handleDone}
-              className="w-full rounded-lg bg-emerald-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500"
+              disabled={finishing}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
             >
-              Pronto, Conectei!
+              {finishing ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Configurando proxy e Chatwoot...
+                </>
+              ) : (
+                "Pronto, Conectei!"
+              )}
             </button>
           </div>
         )}
