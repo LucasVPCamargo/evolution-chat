@@ -69,20 +69,9 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
   async function handleConnect() {
     setLoading(true);
     setError(null);
-    setStep("Verificando servicos...");
+    setStep("Gerando codigo de pareamento...");
 
     try {
-      // Fresh pre-check before connecting
-      const healthRes = await fetch("/api/health");
-      const healthData = await healthRes.json();
-      if (!healthData.healthy) {
-        setError("Servicos indisponiveis. Verifique o status e tente novamente.");
-        setServices(healthData.services || []);
-        setPrecheck("failed");
-        return;
-      }
-
-      setStep("Criando instancia...");
       const res = await fetch("/api/chips/connect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -101,7 +90,7 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
         setError("Nao foi possivel gerar o codigo de pareamento");
       }
     } catch {
-      setError("Erro de conexao com o servidor");
+      setError("Timeout — tente novamente");
     } finally {
       setLoading(false);
       setStep("");

@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  createInstance,
-  setProxy,
-  setChatwoot,
-} from "@/lib/evolution";
-import { createInbox } from "@/lib/chatwoot";
+import { createInstance } from "@/lib/evolution";
 import { requireAuth } from "@/lib/auth";
+
+export const maxDuration = 15;
 
 export async function POST(req: NextRequest) {
   const denied = await requireAuth();
