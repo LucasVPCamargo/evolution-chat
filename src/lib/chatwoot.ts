@@ -43,6 +43,28 @@ export async function deleteInbox(inboxId: number) {
   return res.json();
 }
 
+export async function addAllAgentsToInbox(inboxId: number) {
+  // Get all agents
+  const agentsRes = await fetch(
+    `${CHATWOOT_URL}/api/v1/accounts/${CHATWOOT_ACCOUNT_ID}/agents`,
+    { headers }
+  );
+  const agents = await agentsRes.json();
+  const agentIds = (agents as { id: number }[]).map((a) => a.id);
+
+  if (agentIds.length === 0) return null;
+
+  const res = await fetch(
+    `${CHATWOOT_URL}/api/v1/accounts/${CHATWOOT_ACCOUNT_ID}/inbox_members`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ inbox_id: inboxId, user_ids: agentIds }),
+    }
+  );
+  return res.json();
+}
+
 export async function deleteInboxByName(chipName: string): Promise<number> {
   const data = await listInboxes();
   const inboxes = data.payload ?? data ?? [];

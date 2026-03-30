@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { setProxy, setChatwoot } from "@/lib/evolution";
-import { createInbox } from "@/lib/chatwoot";
+import { createInbox, addAllAgentsToInbox } from "@/lib/chatwoot";
 import { requireAuth } from "@/lib/auth";
+
+export const maxDuration = 15;
 
 export async function POST(req: NextRequest) {
   const denied = await requireAuth();
@@ -22,6 +24,11 @@ export async function POST(req: NextRequest) {
       setProxy(name).catch(() => null),
       createInbox(name).catch(() => null),
     ]);
+
+    // Add all agents to the new inbox
+    if (inbox?.id) {
+      await addAllAgentsToInbox(inbox.id).catch(() => null);
+    }
 
     const chatwoot = await setChatwoot(name).catch(() => null);
 
