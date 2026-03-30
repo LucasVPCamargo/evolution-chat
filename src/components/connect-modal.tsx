@@ -118,10 +118,9 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
 
   const [finishing, setFinishing] = useState(false);
 
-  async function handleDone() {
-    setFinishing(true);
+  async function runSetup() {
+    if (!name) return;
     try {
-      // Configure proxy + Chatwoot after user confirmed connection
       await fetch("/api/chips/setup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -130,7 +129,21 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
     } catch {
       // Setup errors are non-fatal — chip is already connected
     }
+  }
+
+  async function handleDone() {
+    setFinishing(true);
+    await runSetup();
     setFinishing(false);
+    onSuccess();
+    onClose();
+  }
+
+  async function handleCloseModal() {
+    // If pairing code was shown, run setup even if closing with X
+    if (pairingCode && name) {
+      runSetup(); // fire-and-forget
+    }
     onSuccess();
     onClose();
   }
@@ -143,7 +156,7 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
             {pairingCode ? "Codigo de Pareamento" : "Conectar Novo Chip"}
           </h2>
           <button
-            onClick={onClose}
+            onClick={handleCloseModal}
             className="rounded-lg p-1 text-zinc-400 hover:bg-zinc-800"
           >
             <X className="h-5 w-5" />
