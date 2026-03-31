@@ -23,6 +23,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // For manual proxies, exclude the IP from redsocks before configuring
+    if (manualProxy?.host) {
+      await fetch(
+        `${process.env.EVOLUTION_API_URL!.replace(":8080", ":9090")}/exclude/${manualProxy.host}`,
+        { signal: AbortSignal.timeout(5000) }
+      ).catch(() => null);
+    }
+
     // Configure proxy, inbox, settings, and chatwoot integration in parallel
     const [proxy, inbox] = await Promise.all([
       setProxy(name, manualProxy).catch(() => null),
