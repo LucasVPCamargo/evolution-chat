@@ -64,8 +64,14 @@ export async function restartInstance(name: string) {
   return res.json();
 }
 
+export async function findProxy(name: string) {
+  const res = await fetch(`${API_URL}/proxy/find/${name}`, { headers });
+  return res.json();
+}
+
 export async function setProxy(name: string) {
   const basePassword = process.env.PROXY_PASSWORD!;
+  const sessionId = `${name}-${Date.now()}`;
   const res = await fetch(`${API_URL}/proxy/set/${name}`, {
     method: "POST",
     headers,
@@ -75,7 +81,7 @@ export async function setProxy(name: string) {
       port: process.env.PROXY_PORT!,
       protocol: process.env.PROXY_PROTOCOL || "http",
       username: process.env.PROXY_USERNAME!,
-      password: `${basePassword}_country-br_session-${name}`,
+      password: `${basePassword}_country-br_session-${sessionId}`,
     }),
   });
   return res.json();

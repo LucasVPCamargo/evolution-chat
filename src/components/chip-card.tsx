@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   Wifi,
   WifiOff,
@@ -8,13 +9,32 @@ import {
   Trash2,
   RotateCw,
   Link,
+  Globe,
+  Loader2,
 } from "lucide-react";
+
+export interface ProxyDetails {
+  enabled?: boolean;
+  host?: string;
+  port?: string;
+  protocol?: string;
+  username?: string;
+  password?: string;
+}
+
+interface ProxyIpResult {
+  ip: string;
+  country: string;
+  city: string;
+  latencyMs: number;
+}
 
 interface ChipCardProps {
   name: string;
   number: string;
   status: string;
   proxy: boolean;
+  proxyDetails: ProxyDetails | null;
   chatwoot: boolean;
   onRestart: (name: string) => void;
   onDelete: (name: string) => void;
@@ -26,6 +46,7 @@ export function ChipCard({
   number,
   status,
   proxy,
+  proxyDetails,
   chatwoot,
   onRestart,
   onDelete,
@@ -33,6 +54,31 @@ export function ChipCard({
 }: ChipCardProps) {
   const isOnline = status === "open";
   const isClosed = status === "close";
+  const [proxyIp, setProxyIp] = useState<ProxyIpResult | null>(null);
+  const [checkingIp, setCheckingIp] = useState(false);
+  const [ipError, setIpError] = useState(false);
+
+  async function handleCheckIp() {
+    setCheckingIp(true);
+    setIpError(false);
+    try {
+      const res = await fetch("/api/chips/proxy-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) { setIpError(true); return; }
+      const data = await res.json();
+      setProxyIp(data);
+    } catch {
+      setIpError(true);
+    } finally {
+      setCheckingIp(false);
+    }
+  }
+
+  const sessionMatch = proxyDetails?.password?.match(/session-(.+)$/);
+  const sessionName = sessionMatch ? sessionMatch[1] : null;
 
   return (
     <div
@@ -81,6 +127,49 @@ export function ChipCard({
           <span className={chatwoot ? "text-zinc-400" : "text-zinc-600"}>Chatwoot</span>
         </div>
       </div>
+
+      {/* Proxy Details */}
+      {proxy && proxyDetails && (
+        <div className="mt-3 rounded-lg bg-zinc-800/60 px-3 py-2 text-xs">
+          <div className="flex items-center gap-1.5 text-zinc-400">
+            <Globe className="h-3 w-3" />
+            <span className="font-medium">Proxy</span>
+            <span className="text-zinc-600">|</span>
+            <span className="font-mono text-zinc-500">
+              {proxyDetails.host}:{proxyDetails.port}
+            </span>
+          </div>
+          {sessionName && (
+            <div className="mt-1 text-zinc-500">
+              Sessao: <span className="font-mono text-zinc-400">{sessionName}</span>
+            </div>
+          )}
+          <div className="mt-1.5 flex items-center gap-2">
+            {proxyIp ? (
+              <span className={`font-mono ${proxyIp.country === "BR" ? "text-emerald-400" : "text-amber-400"}`}>
+                {proxyIp.ip} - {proxyIp.city}, {proxyIp.country}
+                <span className="ml-1 text-zinc-600">({proxyIp.latencyMs}ms)</span>
+              </span>
+            ) : ipError ? (
+              <span className="text-red-400">Proxy sem resposta</span>
+            ) : null}
+            <button
+              onClick={handleCheckIp}
+              disabled={checkingIp}
+              className="ml-auto flex items-center gap-1 rounded bg-zinc-700/60 px-2 py-0.5 text-[10px] text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-300"
+            >
+              {checkingIp ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <>
+                  <Globe className="h-3 w-3" />
+                  Checar IP
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="mt-4 flex gap-2">
         {isClosed && (

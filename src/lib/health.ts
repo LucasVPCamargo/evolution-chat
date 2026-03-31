@@ -104,6 +104,33 @@ export async function checkProxy(): Promise<ServiceHealth> {
   }
 }
 
+export async function checkProxyForInstance(
+  instanceName: string,
+  proxyPassword?: string
+): Promise<{ ip: string; country: string; city: string; latencyMs: number } | null> {
+  try {
+    const { ProxyAgent } = await import("undici");
+    const password = proxyPassword || `${process.env.PROXY_PASSWORD!}_country-br_session-${instanceName}`;
+    const proxyUrl = `http://${process.env.PROXY_USERNAME}:${password}@${process.env.PROXY_HOST}:${process.env.PROXY_PORT}`;
+    const agent = new ProxyAgent(proxyUrl);
+    const start = Date.now();
+    const res = await fetch("http://ip-api.com/json/?fields=status,country,countryCode,city,query", {
+      // @ts-expect-error dispatcher is valid in Node.js with undici
+      dispatcher: agent,
+      signal: AbortSignal.timeout(10000),
+    });
+    const data = await res.json();
+    return {
+      ip: data.query,
+      country: data.countryCode,
+      city: data.city,
+      latencyMs: Date.now() - start,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function runHealthChecks(): Promise<HealthResponse> {
   const results = await Promise.allSettled([
     checkEvolution(),

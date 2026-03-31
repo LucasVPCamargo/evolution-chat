@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { fetchInstances } from "@/lib/evolution";
+import { fetchInstances, findProxy } from "@/lib/evolution";
 import { requireAuth } from "@/lib/auth";
 
 export async function GET() {
@@ -8,7 +8,20 @@ export async function GET() {
 
   try {
     const instances = await fetchInstances();
-    return NextResponse.json(instances);
+    if (!Array.isArray(instances)) return NextResponse.json(instances);
+
+    const enriched = await Promise.all(
+      instances.map(async (inst: Record<string, unknown>) => {
+        try {
+          const proxyData = await findProxy(inst.name as string);
+          return { ...inst, proxyDetails: proxyData };
+        } catch {
+          return { ...inst, proxyDetails: null };
+        }
+      })
+    );
+
+    return NextResponse.json(enriched);
   } catch (error) {
     return NextResponse.json(
       { error: "Failed to fetch instances", details: String(error) },

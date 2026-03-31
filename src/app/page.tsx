@@ -8,12 +8,22 @@ import { ChipCard } from "@/components/chip-card";
 import { ConnectModal } from "@/components/connect-modal";
 import { StatsBar } from "@/components/stats-bar";
 
+interface ProxyDetails {
+  enabled?: boolean;
+  host?: string;
+  port?: string;
+  protocol?: string;
+  username?: string;
+  password?: string;
+}
+
 interface Chip {
   name: string;
   number: string;
   connectionStatus: string;
   Proxy: { enabled: boolean } | null;
   Chatwoot: { enabled: boolean } | null;
+  proxyDetails: ProxyDetails | null;
 }
 
 export default function Dashboard() {
@@ -28,6 +38,7 @@ export default function Dashboard() {
   const [copied, setCopied] = useState(false);
   const [health, setHealth] = useState<{ healthy: boolean; services: { service: string; ok: boolean; latencyMs: number; detail?: string; ip?: string; country?: string; city?: string }[]; timestamp: string } | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
+  const [lastHeal, setLastHeal] = useState<{ healed: number; unreachable: number; timestamp: string } | null>(null);
 
   const loadChips = useCallback(async () => {
     try {
@@ -58,13 +69,25 @@ export default function Dashboard() {
     if (status === "unauthenticated") router.push("/login");
   }, [status, router]);
 
+  const runProxyHeal = useCallback(async () => {
+    try {
+      const res = await fetch("/api/chips/proxy-heal", { method: "POST" });
+      const data = await res.json();
+      setLastHeal({ healed: data.healed, unreachable: data.unreachable, timestamp: data.timestamp });
+      if (data.healed > 0) loadChips();
+    } catch { /* silent */ }
+  }, [loadChips]);
+
   useEffect(() => {
     if (status !== "authenticated") return;
     loadChips();
     loadHealth();
-    const interval = setInterval(() => { loadChips(); loadHealth(); }, 30000);
-    return () => clearInterval(interval);
-  }, [status, loadChips, loadHealth]);
+    const refresh = setInterval(() => { loadChips(); loadHealth(); }, 30000);
+    // Auto-heal proxies a cada 5 minutos
+    const healTimer = setTimeout(() => runProxyHeal(), 10000); // primeira vez 10s após load
+    const healInterval = setInterval(runProxyHeal, 5 * 60 * 1000);
+    return () => { clearInterval(refresh); clearTimeout(healTimer); clearInterval(healInterval); };
+  }, [status, loadChips, loadHealth, runProxyHeal]);
 
   if (status === "loading" || status === "unauthenticated") {
     return (
@@ -175,7 +198,7 @@ export default function Dashboard() {
 
       {/* Stats + Health */}
       <div className="mb-6">
-        <StatsBar total={chips.length} online={online} offline={offline} health={health} healthLoading={healthLoading} />
+        <StatsBar total={chips.length} online={online} offline={offline} health={health} healthLoading={healthLoading} lastHeal={lastHeal} />
       </div>
 
       {/* Chip Grid */}
@@ -208,6 +231,7 @@ export default function Dashboard() {
               number={chip.number}
               status={chip.connectionStatus}
               proxy={!!chip.Proxy?.enabled}
+              proxyDetails={chip.proxyDetails}
               chatwoot={!!chip.Chatwoot?.enabled}
               onRestart={handleRestart}
               onDelete={handleDelete}

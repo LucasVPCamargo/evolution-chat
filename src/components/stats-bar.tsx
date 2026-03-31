@@ -1,6 +1,6 @@
 "use client";
 
-import { Wifi, WifiOff, Smartphone, Server, MessageSquare, Shield, Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { Wifi, WifiOff, Smartphone, Server, MessageSquare, Shield, Loader2, CheckCircle2, XCircle, HeartPulse } from "lucide-react";
 
 interface ServiceHealth {
   service: string;
@@ -18,12 +18,19 @@ interface HealthResponse {
   services: ServiceHealth[];
 }
 
+interface HealStatus {
+  healed: number;
+  unreachable: number;
+  timestamp: string;
+}
+
 interface StatsBarProps {
   total: number;
   online: number;
   offline: number;
   health: HealthResponse | null;
   healthLoading: boolean;
+  lastHeal?: HealStatus | null;
 }
 
 const serviceIcons: Record<string, typeof Server> = {
@@ -38,7 +45,7 @@ const serviceLabels: Record<string, string> = {
   proxy: "Proxy BR",
 };
 
-export function StatsBar({ total, online, offline, health, healthLoading }: StatsBarProps) {
+export function StatsBar({ total, online, offline, health, healthLoading, lastHeal }: StatsBarProps) {
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-3 gap-3">
@@ -110,6 +117,27 @@ export function StatsBar({ total, online, offline, health, healthLoading }: Stat
             );
           })
         ) : null}
+        {lastHeal && (
+          <div
+            title={`Ultimo check: ${new Date(lastHeal.timestamp).toLocaleTimeString("pt-BR")}`}
+            className={`flex items-center gap-1.5 rounded-full border px-3 py-1 ${
+              lastHeal.unreachable > 0
+                ? "border-amber-500/20 bg-amber-950/20"
+                : "border-emerald-500/15 bg-zinc-900/80"
+            }`}
+          >
+            <HeartPulse className={`h-3 w-3 ${lastHeal.unreachable > 0 ? "text-amber-400" : "text-emerald-400"}`} />
+            <span className={`text-[11px] ${lastHeal.unreachable > 0 ? "text-amber-300" : "text-zinc-300"}`}>
+              Auto-heal
+            </span>
+            {lastHeal.healed > 0 && (
+              <span className="text-[10px] text-emerald-400">{lastHeal.healed} corrigido(s)</span>
+            )}
+            {lastHeal.unreachable > 0 && (
+              <span className="text-[10px] text-red-400">{lastHeal.unreachable} falha(s)</span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
