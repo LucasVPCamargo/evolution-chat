@@ -37,9 +37,8 @@ export async function POST() {
 
         try {
           const proxyConfig = await findProxy(name);
-          const oldPassword = proxyConfig?.password as string | undefined;
 
-          const check = await checkProxyForInstance(name, oldPassword);
+          const check = await checkProxyForInstance(name, proxyConfig);
 
           if (check) {
             return {
@@ -50,14 +49,21 @@ export async function POST() {
             };
           }
 
-          // Proxy morto - reconfigura com nova sessao
+          // Proxy manual nao deve ser auto-healado (nao temos pool de proxies manuais)
+          const isManualProxy = proxyConfig?.host !== process.env.PROXY_HOST;
+          if (isManualProxy) {
+            return { name, status: "unreachable" as const };
+          }
+
+          // Proxy IPRoyal morto - reconfigura com nova sessao
+          const oldPassword = proxyConfig?.password as string | undefined;
           const oldSession = oldPassword?.match(/session-(.+)$/)?.[1] || "unknown";
           await setProxy(name);
           const newConfig = await findProxy(name);
           const newSession = (newConfig?.password as string)?.match(/session-(.+)$/)?.[1] || "unknown";
 
           // Verifica se a nova sessao funciona
-          const recheck = await checkProxyForInstance(name, newConfig?.password as string);
+          const recheck = await checkProxyForInstance(name, newConfig);
 
           return {
             name,

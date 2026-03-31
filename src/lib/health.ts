@@ -104,14 +104,25 @@ export async function checkProxy(): Promise<ServiceHealth> {
   }
 }
 
+export interface ProxyConfig {
+  host?: string;
+  port?: string;
+  protocol?: string;
+  username?: string;
+  password?: string;
+}
+
 export async function checkProxyForInstance(
   instanceName: string,
-  proxyPassword?: string
+  proxyConfig?: ProxyConfig
 ): Promise<{ ip: string; country: string; city: string; latencyMs: number } | null> {
   try {
     const { ProxyAgent } = await import("undici");
-    const password = proxyPassword || `${process.env.PROXY_PASSWORD!}_country-br_session-${instanceName}`;
-    const proxyUrl = `http://${process.env.PROXY_USERNAME}:${password}@${process.env.PROXY_HOST}:${process.env.PROXY_PORT}`;
+    const host = proxyConfig?.host || process.env.PROXY_HOST!;
+    const port = proxyConfig?.port || process.env.PROXY_PORT!;
+    const username = proxyConfig?.username || process.env.PROXY_USERNAME!;
+    const password = proxyConfig?.password || `${process.env.PROXY_PASSWORD!}_country-br_session-${instanceName}`;
+    const proxyUrl = `http://${username}:${password}@${host}:${port}`;
     const agent = new ProxyAgent(proxyUrl);
     const start = Date.now();
     const res = await fetch("http://ip-api.com/json/?fields=status,country,countryCode,city,query", {

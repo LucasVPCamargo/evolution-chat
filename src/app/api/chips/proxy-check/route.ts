@@ -14,9 +14,8 @@ export async function POST(req: NextRequest) {
     }
 
     const proxyConfig = await findProxy(name);
-    const password = proxyConfig?.password;
 
-    const result = await checkProxyForInstance(name, password);
+    const result = await checkProxyForInstance(name, proxyConfig);
     if (!result) {
       return NextResponse.json(
         { error: "Proxy unreachable", name },
