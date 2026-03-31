@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
 import { fetchInstances, findProxy, setProxy } from "@/lib/evolution";
+import { deleteInboxByName } from "@/lib/chatwoot";
 import { checkProxyForInstance } from "@/lib/health";
 
 interface HealResult {
@@ -79,6 +80,21 @@ export async function POST() {
       })
     );
 
+    // Clean up Chatwoot inboxes for offline chips
+    const offlineChips = instances.filter(
+      (i: Record<string, unknown>) => i.connectionStatus === "close"
+    );
+    const cleanedInboxes: string[] = [];
+    await Promise.all(
+      offlineChips.map(async (chip: Record<string, unknown>) => {
+        const name = chip.name as string;
+        try {
+          const deleted = await deleteInboxByName(name);
+          if (deleted > 0) cleanedInboxes.push(name);
+        } catch { /* silent */ }
+      })
+    );
+
     const healed = results.filter((r) => r.status === "healed").length;
     const healthy = results.filter((r) => r.status === "healthy").length;
     const unreachable = results.filter((r) => r.status === "unreachable").length;
@@ -89,6 +105,7 @@ export async function POST() {
       healthy,
       healed,
       unreachable,
+      cleanedInboxes,
       results,
     });
   } catch (error) {
