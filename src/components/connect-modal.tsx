@@ -36,6 +36,8 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
   const [step, setStep] = useState("");
   const [precheck, setPrecheck] = useState<"checking" | "ok" | "failed">("checking");
   const [services, setServices] = useState<ServiceHealth[]>([]);
+  const [proxyMode, setProxyMode] = useState<"auto" | "manual">("auto");
+  const [manualProxyStr, setManualProxyStr] = useState("");
 
   useEffect(() => {
     runPrecheck();
@@ -107,13 +109,24 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
 
   const [finishing, setFinishing] = useState(false);
 
+  function parseProxyString(str: string) {
+    const parts = str.trim().split(":");
+    if (parts.length !== 4) return null;
+    return { host: parts[0], port: parts[1], username: parts[2], password: parts[3] };
+  }
+
   async function runSetup() {
     if (!name) return;
     try {
+      const body: Record<string, unknown> = { name };
+      if (proxyMode === "manual") {
+        const parsed = parseProxyString(manualProxyStr);
+        if (parsed) body.manualProxy = parsed;
+      }
       await fetch("/api/chips/setup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify(body),
       });
     } catch {
       // Setup errors are non-fatal — chip is already connected
@@ -228,11 +241,55 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
               </p>
             </div>
 
-            <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-950/20 px-3 py-2">
-              <Shield className="h-4 w-4 shrink-0 text-emerald-400" />
-              <p className="text-xs text-emerald-300">
-                Proxy residencial brasileiro sera configurado automaticamente antes da conexao
-              </p>
+            {/* Proxy mode selector */}
+            <div className="space-y-2">
+              <label className="mb-1.5 block text-sm text-zinc-400">Proxy</label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setProxyMode("auto")}
+                  disabled={precheck !== "ok"}
+                  className={`flex-1 rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
+                    proxyMode === "auto"
+                      ? "border-emerald-500/30 bg-emerald-950/30 text-emerald-400"
+                      : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                  }`}
+                >
+                  <Shield className="mx-auto mb-1 h-4 w-4" />
+                  IPRoyal (auto)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProxyMode("manual")}
+                  disabled={precheck !== "ok"}
+                  className={`flex-1 rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
+                    proxyMode === "manual"
+                      ? "border-emerald-500/30 bg-emerald-950/30 text-emerald-400"
+                      : "border-zinc-700 bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                  }`}
+                >
+                  <Shield className="mx-auto mb-1 h-4 w-4" />
+                  Proxy Manual
+                </button>
+              </div>
+              {proxyMode === "auto" ? (
+                <p className="text-xs text-emerald-300/70">
+                  Proxy residencial brasileiro (IPRoyal) configurado automaticamente
+                </p>
+              ) : (
+                <div>
+                  <input
+                    type="text"
+                    placeholder="host:porta:usuario:senha"
+                    value={manualProxyStr}
+                    onChange={(e) => setManualProxyStr(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 font-mono text-sm text-white placeholder:text-zinc-500 focus:border-emerald-500 focus:outline-none"
+                  />
+                  <p className="mt-1 text-xs text-zinc-500">
+                    Formato: host:porta:usuario:senha
+                  </p>
+                </div>
+              )}
             </div>
 
             {error && (
@@ -243,7 +300,7 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
 
             <button
               onClick={handleConnect}
-              disabled={loading || !name || !number || precheck !== "ok"}
+              disabled={loading || !name || !number || precheck !== "ok" || (proxyMode === "manual" && !manualProxyStr.includes(":"))}
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
             >
               {loading ? (
@@ -273,7 +330,9 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
             <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-950/20 px-3 py-2">
               <Shield className="h-4 w-4 shrink-0 text-emerald-400" />
               <p className="text-xs text-emerald-300">
-                Conectado via proxy residencial BR — IP protegido
+                {proxyMode === "auto"
+                  ? "Proxy residencial BR (IPRoyal) sera configurado automaticamente"
+                  : `Proxy manual: ${manualProxyStr.split(":").slice(0, 2).join(":")}`}
               </p>
             </div>
             <p className="text-sm text-zinc-400">

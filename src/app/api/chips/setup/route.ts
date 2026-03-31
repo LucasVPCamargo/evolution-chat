@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { setProxy, setChatwoot } from "@/lib/evolution";
+import { setProxy, setChatwoot, setSettings } from "@/lib/evolution";
+import type { ManualProxy } from "@/lib/evolution";
 import { createInbox, addAllAgentsToInbox } from "@/lib/chatwoot";
 import { requireAuth } from "@/lib/auth";
 
@@ -10,7 +11,10 @@ export async function POST(req: NextRequest) {
   if (denied) return denied;
 
   try {
-    const { name } = await req.json();
+    const { name, manualProxy } = await req.json() as {
+      name?: string;
+      manualProxy?: ManualProxy;
+    };
 
     if (!name) {
       return NextResponse.json(
@@ -19,10 +23,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Configure proxy, inbox, and chatwoot integration in parallel
+    // Configure proxy, inbox, settings, and chatwoot integration in parallel
     const [proxy, inbox] = await Promise.all([
-      setProxy(name).catch(() => null),
+      setProxy(name, manualProxy).catch(() => null),
       createInbox(name).catch(() => null),
+      setSettings(name).catch(() => null),
     ]);
 
     // Add all agents to the new inbox

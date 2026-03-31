@@ -69,19 +69,52 @@ export async function findProxy(name: string) {
   return res.json();
 }
 
-export async function setProxy(name: string) {
-  const basePassword = process.env.PROXY_PASSWORD!;
-  const sessionId = `${name}-${Date.now()}`;
+export interface ManualProxy {
+  host: string;
+  port: string;
+  username: string;
+  password: string;
+  protocol?: string;
+}
+
+export async function setProxy(name: string, manual?: ManualProxy) {
+  const body = manual
+    ? {
+        enabled: true,
+        host: manual.host,
+        port: manual.port,
+        protocol: manual.protocol || "http",
+        username: manual.username,
+        password: manual.password,
+      }
+    : {
+        enabled: true,
+        host: process.env.PROXY_HOST!,
+        port: process.env.PROXY_PORT!,
+        protocol: process.env.PROXY_PROTOCOL || "http",
+        username: process.env.PROXY_USERNAME!,
+        password: `${process.env.PROXY_PASSWORD!}_country-br_session-${name}-${Date.now()}`,
+      };
+
   const res = await fetch(`${API_URL}/proxy/set/${name}`, {
     method: "POST",
     headers,
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
+export async function setSettings(name: string) {
+  const res = await fetch(`${API_URL}/settings/set/${name}`, {
+    method: "POST",
+    headers,
     body: JSON.stringify({
-      enabled: true,
-      host: process.env.PROXY_HOST!,
-      port: process.env.PROXY_PORT!,
-      protocol: process.env.PROXY_PROTOCOL || "http",
-      username: process.env.PROXY_USERNAME!,
-      password: `${basePassword}_country-br_session-${sessionId}`,
+      rejectCall: false,
+      groupsIgnore: true,
+      alwaysOnline: false,
+      readMessages: false,
+      readStatus: false,
+      syncFullHistory: false,
     }),
   });
   return res.json();
@@ -100,9 +133,9 @@ export async function setChatwoot(name: string) {
       reopenConversation: true,
       conversationPending: false,
       nameInbox: `WhatsApp - ${name}`,
-      importContacts: true,
-      importMessages: true,
-      daysLimitImportMessages: 3,
+      importContacts: false,
+      importMessages: false,
+      daysLimitImportMessages: 0,
       autoCreate: true,
       organization: "Atendimento",
       logo: "",
