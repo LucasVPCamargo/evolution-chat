@@ -74,7 +74,7 @@ export default function Dashboard() {
       const res = await fetch("/api/chips/proxy-heal", { method: "POST" });
       const data = await res.json();
       setLastHeal({ healed: data.healed, unreachable: data.unreachable, timestamp: data.timestamp });
-      if (data.healed > 0) loadChips();
+      if (data.healed > 0 || (data.staleDetected && data.staleDetected.length > 0)) loadChips();
     } catch { /* silent */ }
   }, [loadChips]);
 
