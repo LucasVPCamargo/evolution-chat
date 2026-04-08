@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
-import { fetchInstances, findProxy, setProxy } from "@/lib/evolution";
+import { fetchInstances, findProxy, setProxy, getConnectionState } from "@/lib/evolution";
 import { deleteInboxByName } from "@/lib/chatwoot";
 import { checkProxyForInstance } from "@/lib/health";
 
@@ -23,8 +23,31 @@ export async function POST() {
       return NextResponse.json({ error: "Failed to fetch instances" }, { status: 500 });
     }
 
-    const onlineChips = instances.filter(
+    // Verificar estado real dos chips que Evolution reporta como "open"
+    const reportedOnline = instances.filter(
       (i: Record<string, unknown>) => i.connectionStatus === "open"
+    );
+
+    const staleChips: string[] = [];
+    const onlineChips: Record<string, unknown>[] = [];
+
+    await Promise.all(
+      reportedOnline.map(async (chip: Record<string, unknown>) => {
+        const name = chip.name as string;
+        try {
+          const state = await getConnectionState(name);
+          const actualState = state?.instance?.state || state?.state;
+          if (actualState && actualState !== "open") {
+            staleChips.push(name);
+            // Limpar inbox do chip que caiu silenciosamente
+            deleteInboxByName(name).catch(() => {});
+          } else {
+            onlineChips.push(chip);
+          }
+        } catch {
+          onlineChips.push(chip); // Se falhar a checagem, tratar como online
+        }
+      })
     );
 
     const results: HealResult[] = await Promise.all(
@@ -105,6 +128,7 @@ export async function POST() {
       healthy,
       healed,
       unreachable,
+      staleDetected: staleChips,
       cleanedInboxes,
       results,
     });
