@@ -27,6 +27,7 @@ interface HealStatus {
 interface StatsBarProps {
   total: number;
   online: number;
+  connecting: number;
   offline: number;
   health: HealthResponse | null;
   healthLoading: boolean;
@@ -45,10 +46,10 @@ const serviceLabels: Record<string, string> = {
   proxy: "Proxy BR",
 };
 
-export function StatsBar({ total, online, offline, health, healthLoading, lastHeal }: StatsBarProps) {
+export function StatsBar({ total, online, connecting, offline, health, healthLoading, lastHeal }: StatsBarProps) {
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-4 gap-3">
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/80 p-4">
           <div className="flex items-center gap-3">
             <div className="rounded-lg bg-zinc-800 p-2.5">
@@ -71,6 +72,19 @@ export function StatsBar({ total, online, offline, health, healthLoading, lastHe
             </div>
           </div>
         </div>
+        {connecting > 0 && (
+          <div className="rounded-xl border border-amber-500/10 bg-zinc-900/80 p-4">
+            <div className="flex items-center gap-3">
+              <div className="rounded-lg bg-amber-500/10 p-2.5">
+                <Loader2 className="h-5 w-5 animate-spin text-amber-400" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-amber-400">{connecting}</p>
+                <p className="text-xs text-zinc-500">Conectando</p>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="rounded-xl border border-red-500/10 bg-zinc-900/80 p-4">
           <div className="flex items-center gap-3">
             <div className="rounded-lg bg-red-500/10 p-2.5">

@@ -53,6 +53,7 @@ export function ChipCard({
   onReconnect,
 }: ChipCardProps) {
   const isOnline = status === "open";
+  const isConnecting = status === "connecting";
   const isClosed = status === "close";
   const [proxyIp, setProxyIp] = useState<ProxyIpResult | null>(null);
   const [checkingIp, setCheckingIp] = useState(false);
@@ -85,14 +86,18 @@ export function ChipCard({
       className={`group rounded-xl border p-5 transition-all ${
         isOnline
           ? "border-emerald-500/15 bg-zinc-900/80"
-          : "border-red-500/15 bg-zinc-900/80"
+          : isConnecting
+            ? "border-amber-500/15 bg-zinc-900/80"
+            : "border-red-500/15 bg-zinc-900/80"
       }`}
     >
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3">
-          <div className={`rounded-lg p-2.5 ${isOnline ? "bg-emerald-500/10" : "bg-red-500/10"}`}>
+          <div className={`rounded-lg p-2.5 ${isOnline ? "bg-emerald-500/10" : isConnecting ? "bg-amber-500/10" : "bg-red-500/10"}`}>
             {isOnline ? (
               <Wifi className="h-5 w-5 text-emerald-400" />
+            ) : isConnecting ? (
+              <Loader2 className="h-5 w-5 animate-spin text-amber-400" />
             ) : (
               <WifiOff className="h-5 w-5 text-red-400" />
             )}
@@ -108,10 +113,12 @@ export function ChipCard({
           className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
             isOnline
               ? "bg-emerald-500/15 text-emerald-400"
-              : "bg-red-500/15 text-red-400"
+              : isConnecting
+                ? "bg-amber-500/15 text-amber-400"
+                : "bg-red-500/15 text-red-400"
           }`}
         >
-          {isOnline ? "Online" : status || "Offline"}
+          {isOnline ? "Online" : isConnecting ? "Conectando..." : status || "Offline"}
         </span>
       </div>
 

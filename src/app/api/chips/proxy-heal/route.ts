@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
-import { fetchInstances, findProxy, setProxy, getConnectionState } from "@/lib/evolution";
+import { fetchInstances, findProxy, setProxy, getConnectionState, restartInstance } from "@/lib/evolution";
 import { checkProxyForInstance } from "@/lib/health";
 
 interface HealResult {
@@ -28,6 +28,7 @@ export async function POST() {
     );
 
     const staleChips: string[] = [];
+    const restartedChips: string[] = [];
     const onlineChips: Record<string, unknown>[] = [];
 
     await Promise.all(
@@ -38,11 +39,16 @@ export async function POST() {
           const actualState = state?.instance?.state || state?.state;
           if (actualState && actualState !== "open") {
             staleChips.push(name);
+            // Tentar restart automático para reconectar
+            try {
+              await restartInstance(name);
+              restartedChips.push(name);
+            } catch { /* silent */ }
           } else {
             onlineChips.push(chip);
           }
         } catch {
-          onlineChips.push(chip); // Se falhar a checagem, tratar como online
+          onlineChips.push(chip);
         }
       })
     );
@@ -111,6 +117,7 @@ export async function POST() {
       healed,
       unreachable,
       staleDetected: staleChips,
+      restartedChips,
       results,
     });
   } catch (error) {

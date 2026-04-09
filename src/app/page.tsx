@@ -74,7 +74,14 @@ export default function Dashboard() {
       const res = await fetch("/api/chips/proxy-heal", { method: "POST" });
       const data = await res.json();
       setLastHeal({ healed: data.healed, unreachable: data.unreachable, timestamp: data.timestamp });
-      if (data.healed > 0 || (data.staleDetected && data.staleDetected.length > 0)) loadChips();
+      if (data.healed > 0) loadChips();
+      // Marcar chips stale como "close" no estado local imediatamente
+      if (data.staleDetected && data.staleDetected.length > 0) {
+        const staleSet = new Set(data.staleDetected as string[]);
+        setChips(prev => prev.map(c =>
+          staleSet.has(c.name) ? { ...c, connectionStatus: "connecting" } : c
+        ));
+      }
     } catch { /* silent */ }
   }, [loadChips]);
 
@@ -150,7 +157,8 @@ export default function Dashboard() {
   }
 
   const online = chips.filter((c) => c.connectionStatus === "open").length;
-  const offline = chips.filter((c) => c.connectionStatus !== "open").length;
+  const connecting = chips.filter((c) => c.connectionStatus === "connecting").length;
+  const offline = chips.filter((c) => c.connectionStatus !== "open" && c.connectionStatus !== "connecting").length;
 
   return (
     <main className="mx-auto max-w-6xl px-6 py-8">
@@ -198,7 +206,7 @@ export default function Dashboard() {
 
       {/* Stats + Health */}
       <div className="mb-6">
-        <StatsBar total={chips.length} online={online} offline={offline} health={health} healthLoading={healthLoading} lastHeal={lastHeal} />
+        <StatsBar total={chips.length} online={online} connecting={connecting} offline={offline} health={health} healthLoading={healthLoading} lastHeal={lastHeal} />
       </div>
 
       {/* Chip Grid */}
