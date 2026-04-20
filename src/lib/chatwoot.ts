@@ -8,8 +8,14 @@ const headers = {
   "Content-Type": "application/json",
 };
 
+const DEFAULT_TIMEOUT_MS = 8000;
+
+function timedFetch(url: string, init: RequestInit = {}, ms: number = DEFAULT_TIMEOUT_MS) {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
+}
+
 export async function createInbox(chipName: string) {
-  const res = await fetch(
+  const res = await timedFetch(
     `${CHATWOOT_URL}/api/v1/accounts/${CHATWOOT_ACCOUNT_ID}/inboxes`,
     {
       method: "POST",
@@ -18,7 +24,7 @@ export async function createInbox(chipName: string) {
         name: `WhatsApp - ${chipName}`,
         channel: {
           type: "api",
-          webhook_url: `${EVOLUTION_WEBHOOK_BASE}/chatwoot/webhook/${chipName}`,
+          webhook_url: `${EVOLUTION_WEBHOOK_BASE}/chatwoot/webhook/${encodeURIComponent(chipName)}`,
         },
       }),
     }
@@ -27,7 +33,7 @@ export async function createInbox(chipName: string) {
 }
 
 export async function listInboxes() {
-  const res = await fetch(
+  const res = await timedFetch(
     `${CHATWOOT_URL}/api/v1/accounts/${CHATWOOT_ACCOUNT_ID}/inboxes`,
     { headers }
   );
@@ -35,7 +41,7 @@ export async function listInboxes() {
 }
 
 export async function deleteInbox(inboxId: number) {
-  const res = await fetch(
+  const res = await timedFetch(
     `${CHATWOOT_URL}/api/v1/accounts/${CHATWOOT_ACCOUNT_ID}/inboxes/${inboxId}`,
     { method: "DELETE", headers }
   );
@@ -44,8 +50,7 @@ export async function deleteInbox(inboxId: number) {
 }
 
 export async function addAllAgentsToInbox(inboxId: number) {
-  // Get all agents
-  const agentsRes = await fetch(
+  const agentsRes = await timedFetch(
     `${CHATWOOT_URL}/api/v1/accounts/${CHATWOOT_ACCOUNT_ID}/agents`,
     { headers }
   );
@@ -54,7 +59,7 @@ export async function addAllAgentsToInbox(inboxId: number) {
 
   if (agentIds.length === 0) return null;
 
-  const res = await fetch(
+  const res = await timedFetch(
     `${CHATWOOT_URL}/api/v1/accounts/${CHATWOOT_ACCOUNT_ID}/inbox_members`,
     {
       method: "POST",

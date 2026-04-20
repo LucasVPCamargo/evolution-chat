@@ -18,6 +18,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+      return NextResponse.json(
+        { error: "nome invalido: use apenas letras, numeros, _ ou - (sem espacos)" },
+        { status: 400 }
+      );
+    }
+
     // Step 1: Create instance — returns pairing code immediately
     const instance = await createInstance(name, number);
     const pairingCode = instance?.qrcode?.pairingCode || null;
