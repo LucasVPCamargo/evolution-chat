@@ -47,9 +47,21 @@ export async function POST(req: NextRequest) {
     const pairingCode = instance?.qrcode?.pairingCode || null;
 
     if (!pairingCode) {
+      // Loga o response cru da Evolution (sem secrets) para diagnosticar o que veio no lugar do pairing code.
+      const safeInstance = instance ? { ...instance } : null;
+      if (safeInstance && typeof safeInstance === "object") {
+        // Remove campos potencialmente sensiveis antes do log.
+        delete (safeInstance as Record<string, unknown>).hash;
+        delete (safeInstance as Record<string, unknown>).accessTokenWaBusiness;
+      }
       chipLog("error", "chip.connect.no_pairing_code", name, {
         duration_ms: Date.now() - start,
         detail: instance?._firstError ? String(instance._firstError).slice(0, 200) : undefined,
+        instance_status: instance?.instance?.status,
+        instance_response_keys: instance && typeof instance === "object" ? Object.keys(instance).slice(0, 20) : null,
+        instance_error_message: instance?.message ?? instance?.error ?? instance?.response?.message ?? null,
+        instance_status_code: instance?.status ?? instance?.statusCode ?? null,
+        instance_response: JSON.stringify(safeInstance).slice(0, 1500),
       });
       return NextResponse.json(
         { error: "Falha ao gerar codigo de pareamento", instance },
