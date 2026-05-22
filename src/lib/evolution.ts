@@ -43,36 +43,59 @@ export function buildProxyConfig(name: string, manual?: ManualProxy) {
   };
 }
 
-// Cria a instancia ja com proxy inline para que o Baileys nunca abra WS pelo IP do servidor.
+// Cria a instancia garantindo que Baileys NUNCA abra WS pro WhatsApp pelo IP do servidor.
 //
-// Pipeline:
-//   1. POST /instance/create — Evolution as vezes devolve 200 com qrcode.count:0 antes do
-//      Baileys terminar o handshake via proxy. Nao falhamos imediatamente nesse caso.
-//   2. Poll GET /instance/connect/{name} a cada 1s por ate 6s para recuperar o pairing code
-//      que apareceu apos o create retornar.
-//   3. Se ainda nada: deleta a instância, espera 1s, tenta tudo de novo (1 retry).
-//   4. Antes de retornar com sucesso, faz UM refresh final do code via /instance/connect
-//      para garantir que o code mostrado ao user tenha validade WhatsApp maxima (~40s).
+// Evolution 2.3.7 ignora o campo `proxy` em /instance/create (testado: chips criados com
+// inline proxy ficam com proxy=null no banco). Por isso o fluxo correto e:
 //
-// Total worst-case: ~45s. /api/chips/connect tem maxDuration 60.
+//   1. POST /instance/create { qrcode: false } — cria a instancia em estado "close" (Baileys
+//      NAO inicia ainda)
+//   2. POST /proxy/set/{name} — persiste o proxy no banco
+//   3. GET /proxy/find/{name} — verifica que o proxy ficou salvo. Se nao ficou, aborta.
+//   4. GET /instance/connect/{name} — Baileys inicia AGORA, ja com proxy ativo, e retorna
+//      o pairing code
+//   5. Se nao veio code: poll a cada 1s por ate 6s
+//   6. Refresh final via novo GET /instance/connect — maximiza validade WhatsApp (~40s)
+//
+// Erros sao trackados em _firstError, _secondError; existe 1 retry (delete + recreate).
+// Worst-case ~50s. /api/chips/connect tem maxDuration 60.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function createInstance(name: string, number: string, manualProxy?: ManualProxy): Promise<any> {
-  const body = JSON.stringify({
-    instanceName: name,
-    integration: "WHATSAPP-BAILEYS",
-    number,
-    qrcode: true,
-    proxy: buildProxyConfig(name, manualProxy),
-  });
+  const proxyConfig = buildProxyConfig(name, manualProxy);
 
   const createOnce = async () => {
-    const res = await timedFetch(`${API_URL}/instance/create`, { method: "POST", headers, body }, 15000);
+    const body = JSON.stringify({
+      instanceName: name,
+      integration: "WHATSAPP-BAILEYS",
+      number,
+      qrcode: false,
+    });
+    const res = await timedFetch(`${API_URL}/instance/create`, { method: "POST", headers, body }, 12000);
     return res.json();
   };
 
-  // GET /instance/connect/{name} — usado para polling e para o refresh final.
-  // Retorna { pairingCode, code, base64 } se Baileys ja tem o code disponivel.
-  const fetchPairingCode = async (timeoutMs = 5000): Promise<{ pairingCode: string; code?: string; base64?: string } | null> => {
+  const setProxyOnce = async () => {
+    const res = await timedFetch(`${API_URL}/proxy/set/${name}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(proxyConfig),
+    }, 15000);
+    return res.json();
+  };
+
+  // Verifica se o proxy foi persistido. Retorna true se sim.
+  const verifyProxy = async (): Promise<boolean> => {
+    try {
+      const res = await timedFetch(`${API_URL}/proxy/find/${name}`, { method: "GET", headers }, 5000);
+      const data = await res.json();
+      return Boolean(data && typeof data === "object" && (data as { host?: string }).host);
+    } catch {
+      return false;
+    }
+  };
+
+  // GET /instance/connect — dispara Baileys (na primeira chamada) e/ou refaz o pairing code.
+  const fetchPairingCode = async (timeoutMs = 15000): Promise<{ pairingCode: string; code?: string; base64?: string } | null> => {
     try {
       const res = await timedFetch(`${API_URL}/instance/connect/${name}`, { method: "GET", headers }, timeoutMs);
       const data = (await res.json()) as { pairingCode?: string; code?: string; base64?: string };
@@ -81,103 +104,100 @@ export async function createInstance(name: string, number: string, manualProxy?:
     return null;
   };
 
-  // Poll com intervalo de 1s (1s entre tentativas, ate 6 tentativas = ~6s janela).
+  // Poll a cada 1s por ate windowMs.
   const pollPairingCode = async (windowMs: number) => {
     const deadline = Date.now() + windowMs;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 1000));
-      const got = await fetchPairingCode(4000);
+      const got = await fetchPairingCode(5000);
       if (got) return got;
     }
     return null;
   };
 
-  // Best-effort delete antes do retry para evitar conflitos.
   const tryDelete = async () => {
     try {
       await timedFetch(`${API_URL}/instance/delete/${name}`, { method: "DELETE", headers }, 4000);
     } catch { /* silencioso */ }
   };
 
-  // Faz um refresh final do pairing code logo antes de retornar.
-  // Se Baileys re-emitir aqui, o user ganha a janela cheia de validade (~40s).
-  // Se falhar, devolve o code que ja tinha.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const attachFreshCode = async (response: Record<string, unknown>, extras: Record<string, unknown> = {}): Promise<any> => {
-    const fresh = await fetchPairingCode(4000);
-    const qrcode = response.qrcode as Record<string, unknown> | undefined;
+  const buildSuccess = (pairing: { pairingCode: string; code?: string; base64?: string }, extras: Record<string, unknown> = {}): any => ({
+    instance: { instanceName: name, status: "connecting" },
+    qrcode: { pairingCode: pairing.pairingCode, code: pairing.code, base64: pairing.base64, count: 1 },
+    _proxy_set: true,
+    ...extras,
+  });
+
+  // Tenta o fluxo completo. Retorna sucesso ou null para tentar de novo.
+  // Tambem retorna o motivo do erro se falhou.
+  const runAttempt = async (): Promise<{ success?: Record<string, unknown>; error?: string }> => {
+    let createResp: Record<string, unknown>;
+    try {
+      createResp = await createOnce();
+    } catch (e) {
+      return { error: `create_failed: ${String(e).slice(0, 150)}` };
+    }
+
+    const instanceName = (createResp as { instance?: { instanceName?: string } }).instance?.instanceName;
+    if (instanceName !== name) {
+      return { error: `create_unexpected_response: ${JSON.stringify(createResp).slice(0, 200)}` };
+    }
+
+    try {
+      await setProxyOnce();
+    } catch (e) {
+      return { error: `set_proxy_failed: ${String(e).slice(0, 150)}` };
+    }
+
+    const proxyOk = await verifyProxy();
+    if (!proxyOk) {
+      return { error: "proxy_not_persisted_after_set" };
+    }
+
+    // Baileys vai iniciar AGORA, ja com o proxy ativo. Primeira tentativa de pairing code.
+    const first = await fetchPairingCode(15000);
+    if (first) return { success: buildSuccess(first) };
+
+    // Se nao veio na primeira, pola por ate 6s.
+    const polled = await pollPairingCode(6000);
+    if (polled) return { success: buildSuccess(polled, { _recovered_via_poll: true }) };
+
+    return { error: "no_pairing_code_after_poll" };
+  };
+
+  // Faz refresh final do code para garantir validade maxima WhatsApp (~40s a partir de agora).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const refreshFinal = async (success: Record<string, unknown>): Promise<any> => {
+    const fresh = await fetchPairingCode(5000);
     if (fresh) {
       return {
-        ...response,
-        qrcode: {
-          ...(qrcode || {}),
-          pairingCode: fresh.pairingCode,
-          code: fresh.code,
-          base64: fresh.base64,
-          count: 1,
-        },
+        ...success,
+        qrcode: { pairingCode: fresh.pairingCode, code: fresh.code, base64: fresh.base64, count: 1 },
         _refreshed: true,
-        ...extras,
       };
     }
-    return { ...response, ...extras };
+    return success;
   };
 
   // Tentativa 1
-  let first: Record<string, unknown> | null = null;
-  let firstError: unknown = null;
-  try {
-    first = await createOnce();
-  } catch (err) {
-    firstError = err;
-  }
+  const first = await runAttempt();
+  if (first.success) return refreshFinal(first.success);
 
-  if ((first as { qrcode?: { pairingCode?: string } })?.qrcode?.pairingCode) {
-    return attachFreshCode(first!);
-  }
-
-  if (first && (first as { instance?: { instanceName?: string } }).instance?.instanceName === name) {
-    const polled = await pollPairingCode(6000);
-    if (polled) {
-      return attachFreshCode(
-        { ...first, qrcode: { ...(first.qrcode as Record<string, unknown> || {}), ...polled, count: 1 } },
-        { _recovered_via_poll: true },
-      );
-    }
-  }
-
-  // Tentativa 2 (apos limpar e backoff de 1s)
+  // Tentativa 2 (apos delete e backoff)
   await tryDelete();
-  await new Promise((r) => setTimeout(r, 1000));
+  await new Promise((r) => setTimeout(r, 1500));
 
-  let second: Record<string, unknown> | null = null;
-  let secondError: unknown = null;
-  try {
-    second = await createOnce();
-  } catch (err) {
-    secondError = err;
-  }
+  const second = await runAttempt();
+  if (second.success) return refreshFinal({ ...second.success, _retried: true });
 
-  if ((second as { qrcode?: { pairingCode?: string } })?.qrcode?.pairingCode) {
-    return attachFreshCode(second!, { _retried: true });
-  }
-
-  if (second && (second as { instance?: { instanceName?: string } }).instance?.instanceName === name) {
-    const polled = await pollPairingCode(6000);
-    if (polled) {
-      return attachFreshCode(
-        { ...second, qrcode: { ...(second.qrcode as Record<string, unknown> || {}), ...polled, count: 1 } },
-        { _recovered_via_poll: true, _retried: true },
-      );
-    }
-  }
-
-  // Tudo falhou — limpa a instância residual e devolve a melhor resposta com diagnostico.
+  // Tudo falhou — limpa e devolve resposta de diagnostico.
   await tryDelete();
   return {
-    ...(second || first || {}),
-    _firstError: firstError ? String(firstError).slice(0, 200) : "no_pairing_code_first_attempt",
-    _secondError: secondError ? String(secondError).slice(0, 200) : "no_pairing_code_second_attempt",
+    instance: { instanceName: name, status: "failed" },
+    qrcode: { count: 0 },
+    _firstError: first.error || "unknown",
+    _secondError: second.error || "unknown",
     _retried: true,
   };
 }
