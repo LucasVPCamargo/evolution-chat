@@ -5,7 +5,7 @@ import { checkProxyForInstance } from "@/lib/health";
 
 interface HealResult {
   name: string;
-  status: "healthy" | "healed" | "unreachable" | "skipped";
+  status: "healthy" | "healed" | "restarted" | "unreachable" | "skipped";
   ip?: string;
   city?: string;
   oldSession?: string;
@@ -100,7 +100,14 @@ export async function POST() {
 
           const isManualProxy = proxyConfig?.host !== process.env.PROXY_HOST;
           if (isManualProxy) {
-            return { name, status: "unreachable" as const };
+            // Nao podemos rotacionar sessao em proxy manual, mas um restart pode destravar
+            // o Baileys quando o problema e estado interno da instancia (e nao o proxy estar caido).
+            try {
+              await restartInstance(name);
+              return { name, status: "restarted" as const, ip: proxyConfig?.host };
+            } catch {
+              return { name, status: "unreachable" as const };
+            }
           }
 
           const oldPassword = proxyConfig?.password as string | undefined;
@@ -127,6 +134,7 @@ export async function POST() {
 
     const healed = results.filter((r) => r.status === "healed").length;
     const healthy = results.filter((r) => r.status === "healthy").length;
+    const restarted = results.filter((r) => r.status === "restarted").length;
     const unreachable = results.filter((r) => r.status === "unreachable").length;
 
     return NextResponse.json({
@@ -134,6 +142,7 @@ export async function POST() {
       checked: results.length,
       healthy,
       healed,
+      restarted,
       unreachable,
       staleDetected: staleChips,
       restartedChips,

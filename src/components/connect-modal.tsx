@@ -74,13 +74,19 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
   async function handleConnect() {
     setLoading(true);
     setError(null);
-    setStep("Gerando codigo de pareamento...");
+    setStep("Configurando proxy e gerando codigo...");
 
     try {
+      const body: Record<string, unknown> = { name, number };
+      if (proxyMode === "manual") {
+        const parsed = parseProxyString(manualProxyStr);
+        if (parsed) body.manualProxy = parsed;
+      }
+
       const res = await fetch("/api/chips/connect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, number }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
 

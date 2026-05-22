@@ -1,15 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createInstance } from "@/lib/evolution";
+import { createInstance, type ManualProxy } from "@/lib/evolution";
 import { requireAuth } from "@/lib/auth";
 
-export const maxDuration = 15;
+export const maxDuration = 20;
 
 export async function POST(req: NextRequest) {
   const denied = await requireAuth();
   if (denied) return denied;
 
   try {
-    const { name, number } = await req.json();
+    const { name, number, manualProxy } = (await req.json()) as {
+      name?: string;
+      number?: string;
+      manualProxy?: ManualProxy;
+    };
 
     if (!name || !number) {
       return NextResponse.json(
@@ -25,8 +29,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Step 1: Create instance — returns pairing code immediately
-    const instance = await createInstance(name, number);
+    // Cria a instancia ja com proxy inline. Sem isso, o Baileys abre o WS para o WhatsApp
+    // pelo IP do servidor antes do setup configurar o proxy — causa principal de bans em
+    // escala (10-20+ chips pareados pelo mesmo IP).
+    const instance = await createInstance(name, number, manualProxy);
     const pairingCode = instance?.qrcode?.pairingCode || null;
 
     if (!pairingCode) {
@@ -36,7 +42,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Return pairing code ASAP — proxy/chatwoot configured via /api/chips/setup
+    // Chatwoot/settings sao configurados via /api/chips/setup depois do pareamento.
     return NextResponse.json({ pairingCode });
   } catch (error) {
     return NextResponse.json(
