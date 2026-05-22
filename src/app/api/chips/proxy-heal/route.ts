@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
 import { fetchInstances, findProxy, setProxy, getConnectionState, restartInstance } from "@/lib/evolution";
 import { checkProxyForInstance } from "@/lib/health";
+import { chipLog } from "@/lib/logger";
 
 interface HealResult {
   name: string;
@@ -36,15 +37,23 @@ export async function POST() {
   const denied = await requireAuth();
   if (denied) return denied;
 
+  const cycleStart = Date.now();
+
   try {
     const instances = await fetchInstances();
     if (!Array.isArray(instances)) {
+      chipLog("error", "proxy.heal.fetch_instances_failed", null, {});
       return NextResponse.json({ error: "Failed to fetch instances" }, { status: 500 });
     }
 
     const reportedOnline = instances.filter(
       (i: Record<string, unknown>) => i.connectionStatus === "open"
     );
+
+    chipLog("info", "proxy.heal.cycle.started", null, {
+      total_instances: instances.length,
+      reported_online: reportedOnline.length,
+    });
 
     const staleChips: string[] = [];
     const restartedChips: string[] = [];
@@ -60,14 +69,19 @@ export async function POST() {
           const actualState = state?.instance?.state || state?.state;
           if (actualState && actualState !== "open") {
             staleChips.push(name);
+            chipLog("warn", "proxy.heal.chip.stale_detected", name, { actual_state: actualState });
             try {
               await restartInstance(name);
               restartedChips.push(name);
-            } catch { /* silent */ }
+              chipLog("info", "proxy.heal.chip.stale_restarted", name, {});
+            } catch (e) {
+              chipLog("error", "proxy.heal.chip.stale_restart_failed", name, { detail: String(e).slice(0, 200) });
+            }
           } else {
             onlineChips.push(chip);
           }
-        } catch {
+        } catch (e) {
+          chipLog("warn", "proxy.heal.chip.state_check_failed", name, { detail: String(e).slice(0, 200) });
           onlineChips.push(chip);
         }
       },
@@ -81,52 +95,68 @@ export async function POST() {
         const proxy = chip.Proxy as { enabled: boolean } | null;
 
         if (!proxy?.enabled) {
+          chipLog("info", "proxy.heal.chip.skipped_no_proxy", name, {});
           return { name, status: "skipped" as const };
         }
 
         try {
           const proxyConfig = await findProxy(name);
-
           const check = await checkProxyForInstance(name, proxyConfig);
 
           if (check) {
-            return {
-              name,
-              status: "healthy" as const,
-              ip: check.ip,
-              city: check.city,
-            };
+            chipLog("info", "proxy.heal.chip.healthy", name, {
+              proxy_host: proxyConfig?.host,
+              proxy_ip: check.ip,
+              proxy_city: check.city,
+              proxy_country: check.country,
+              duration_ms: check.latencyMs,
+            });
+            return { name, status: "healthy" as const, ip: check.ip, city: check.city };
           }
 
           const isManualProxy = proxyConfig?.host !== process.env.PROXY_HOST;
           if (isManualProxy) {
-            // Nao podemos rotacionar sessao em proxy manual, mas um restart pode destravar
-            // o Baileys quando o problema e estado interno da instancia (e nao o proxy estar caido).
+            chipLog("warn", "proxy.heal.chip.manual_unreachable", name, { proxy_host: proxyConfig?.host });
             try {
               await restartInstance(name);
+              chipLog("info", "proxy.heal.chip.restarted", name, { proxy_host: proxyConfig?.host });
               return { name, status: "restarted" as const, ip: proxyConfig?.host };
-            } catch {
+            } catch (e) {
+              chipLog("error", "proxy.heal.chip.restart_failed", name, {
+                proxy_host: proxyConfig?.host,
+                detail: String(e).slice(0, 200),
+              });
               return { name, status: "unreachable" as const };
             }
           }
 
           const oldPassword = proxyConfig?.password as string | undefined;
           const oldSession = oldPassword?.match(/session-(.+)$/)?.[1] || "unknown";
+
+          chipLog("info", "proxy.heal.chip.rotating_session", name, { old_session: oldSession });
           await setProxy(name);
           const newConfig = await findProxy(name);
           const newSession = (newConfig?.password as string)?.match(/session-(.+)$/)?.[1] || "unknown";
 
           const recheck = await checkProxyForInstance(name, newConfig);
 
-          return {
-            name,
-            status: recheck ? "healed" as const : "unreachable" as const,
-            ip: recheck?.ip,
-            city: recheck?.city,
-            oldSession,
-            newSession,
-          };
-        } catch {
+          if (recheck) {
+            chipLog("info", "proxy.heal.chip.healed", name, {
+              old_session: oldSession,
+              new_session: newSession,
+              proxy_ip: recheck.ip,
+              proxy_city: recheck.city,
+            });
+            return { name, status: "healed" as const, ip: recheck.ip, city: recheck.city, oldSession, newSession };
+          }
+
+          chipLog("warn", "proxy.heal.chip.heal_failed", name, {
+            old_session: oldSession,
+            new_session: newSession,
+          });
+          return { name, status: "unreachable" as const, oldSession, newSession };
+        } catch (e) {
+          chipLog("error", "proxy.heal.chip.error", name, { detail: String(e).slice(0, 200) });
           return { name, status: "unreachable" as const };
         }
       },
@@ -136,6 +166,17 @@ export async function POST() {
     const healthy = results.filter((r) => r.status === "healthy").length;
     const restarted = results.filter((r) => r.status === "restarted").length;
     const unreachable = results.filter((r) => r.status === "unreachable").length;
+
+    chipLog("info", "proxy.heal.cycle.completed", null, {
+      duration_ms: Date.now() - cycleStart,
+      checked: results.length,
+      healthy,
+      healed,
+      restarted,
+      unreachable,
+      stale_detected: staleChips.length,
+      stale_restarted: restartedChips.length,
+    });
 
     return NextResponse.json({
       timestamp: new Date().toISOString(),
@@ -149,6 +190,10 @@ export async function POST() {
       results,
     });
   } catch (error) {
+    chipLog("error", "proxy.heal.cycle.failed", null, {
+      duration_ms: Date.now() - cycleStart,
+      detail: String(error).slice(0, 300),
+    });
     return NextResponse.json(
       { error: "Proxy heal failed", details: String(error) },
       { status: 500 }
