@@ -3,7 +3,7 @@ import { createInstance, type ManualProxy } from "@/lib/evolution";
 import { requireAuth } from "@/lib/auth";
 import { chipLog } from "@/lib/logger";
 
-export const maxDuration = 20;
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   const denied = await requireAuth();
@@ -57,6 +57,10 @@ export async function POST(req: NextRequest) {
       chipLog("error", "chip.connect.no_pairing_code", name, {
         duration_ms: Date.now() - start,
         detail: instance?._firstError ? String(instance._firstError).slice(0, 200) : undefined,
+        first_error: instance?._firstError ?? null,
+        second_error: instance?._secondError ?? null,
+        retried: instance?._retried ?? false,
+        recovered_via_poll: instance?._recovered_via_poll ?? false,
         instance_status: instance?.instance?.status,
         instance_response_keys: instance && typeof instance === "object" ? Object.keys(instance).slice(0, 20) : null,
         instance_error_message: instance?.message ?? instance?.error ?? instance?.response?.message ?? null,
@@ -72,6 +76,8 @@ export async function POST(req: NextRequest) {
     chipLog("info", "chip.connect.pairing_code_issued", name, {
       duration_ms: Date.now() - start,
       proxy_mode: manualProxy ? "manual" : "auto",
+      recovered_via_poll: instance?._recovered_via_poll ?? false,
+      retried: instance?._retried ?? false,
     });
 
     return NextResponse.json({ pairingCode });

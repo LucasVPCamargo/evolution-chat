@@ -44,8 +44,18 @@ export function buildProxyConfig(name: string, manual?: ManualProxy) {
 }
 
 // Cria a instancia ja com proxy inline para que o Baileys nunca abra WS pelo IP do servidor.
-// Tenta uma vez; se a Evolution responder erro transiente (timeout/5xx), refaz uma vez.
-export async function createInstance(name: string, number: string, manualProxy?: ManualProxy) {
+//
+// Pipeline:
+//   1. POST /instance/create — Evolution as vezes devolve 200 com qrcode.count:0 antes do
+//      Baileys terminar o handshake via proxy. Nao falhamos imediatamente nesse caso.
+//   2. Poll GET /instance/connect/{name} a cada 2s por ate 8s para recuperar o pairing code
+//      que apareceu apos o create retornar.
+//   3. Se ainda nada: deleta a instância, espera 1s, tenta tudo de novo (1 retry).
+//   4. Apos a 2a tentativa: retorna a resposta com flags _firstError/_secondError para o log.
+//
+// Total worst-case: ~50s. /api/chips/connect tem maxDuration 60.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function createInstance(name: string, number: string, manualProxy?: ManualProxy): Promise<any> {
   const body = JSON.stringify({
     instanceName: name,
     integration: "WHATSAPP-BAILEYS",
@@ -54,20 +64,99 @@ export async function createInstance(name: string, number: string, manualProxy?:
     proxy: buildProxyConfig(name, manualProxy),
   });
 
-  const attempt = () =>
-    timedFetch(`${API_URL}/instance/create`, { method: "POST", headers, body }, 12000)
-      .then((r) => r.json());
+  const createOnce = async () => {
+    const res = await timedFetch(`${API_URL}/instance/create`, { method: "POST", headers, body }, 15000);
+    return res.json();
+  };
 
+  // Poll /instance/connect/{name} para recuperar pairing code emitido tardiamente.
+  // Devolve { pairingCode, code, base64 } ou null se nao apareceu no janela.
+  const pollPairingCode = async (windowMs: number): Promise<{ pairingCode: string; code?: string; base64?: string } | null> => {
+    const deadline = Date.now() + windowMs;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const res = await timedFetch(`${API_URL}/instance/connect/${name}`, { method: "GET", headers }, 5000);
+        const data = (await res.json()) as { pairingCode?: string; code?: string; base64?: string };
+        if (data?.pairingCode) {
+          return { pairingCode: data.pairingCode, code: data.code, base64: data.base64 };
+        }
+      } catch {
+        // ignore — proximo poll tenta de novo
+      }
+    }
+    return null;
+  };
+
+  // Best-effort delete antes do retry para evitar conflitos.
+  const tryDelete = async () => {
+    try {
+      await timedFetch(`${API_URL}/instance/delete/${name}`, { method: "DELETE", headers }, 4000);
+    } catch { /* silencioso */ }
+  };
+
+  const attachPolled = (
+    response: Record<string, unknown>,
+    polled: { pairingCode: string; code?: string; base64?: string },
+  ) => ({
+    ...response,
+    qrcode: {
+      ...((response.qrcode as Record<string, unknown>) || {}),
+      pairingCode: polled.pairingCode,
+      code: polled.code,
+      base64: polled.base64,
+      count: 1,
+    },
+    _recovered_via_poll: true,
+  });
+
+  // Tentativa 1
+  let first: Record<string, unknown> | null = null;
+  let firstError: unknown = null;
   try {
-    return await attempt();
+    first = await createOnce();
   } catch (err) {
-    // Backoff curto antes do retry: 1500ms.
-    await new Promise((r) => setTimeout(r, 1500));
-    const second = await attempt();
-    if (second?.qrcode?.pairingCode) return second;
-    // Se o retry tambem nao deu pairingCode, devolve o ultimo response com o erro original anexado.
-    return { ...second, _firstError: String(err).slice(0, 200) };
+    firstError = err;
   }
+
+  if ((first as { qrcode?: { pairingCode?: string } })?.qrcode?.pairingCode) {
+    return first;
+  }
+
+  if (first && (first as { instance?: { instanceName?: string } }).instance?.instanceName === name) {
+    const polled = await pollPairingCode(8000);
+    if (polled) return attachPolled(first, polled);
+  }
+
+  // Tentativa 2 (apos limpar e backoff de 1s)
+  await tryDelete();
+  await new Promise((r) => setTimeout(r, 1000));
+
+  let second: Record<string, unknown> | null = null;
+  let secondError: unknown = null;
+  try {
+    second = await createOnce();
+  } catch (err) {
+    secondError = err;
+  }
+
+  if ((second as { qrcode?: { pairingCode?: string } })?.qrcode?.pairingCode) {
+    return { ...second, _retried: true };
+  }
+
+  if (second && (second as { instance?: { instanceName?: string } }).instance?.instanceName === name) {
+    const polled = await pollPairingCode(8000);
+    if (polled) return { ...attachPolled(second, polled), _retried: true };
+  }
+
+  // Tudo falhou — limpa a instância residual e devolve a melhor resposta com diagnostico.
+  await tryDelete();
+  return {
+    ...(second || first || {}),
+    _firstError: firstError ? String(firstError).slice(0, 200) : "no_pairing_code_first_attempt",
+    _secondError: secondError ? String(secondError).slice(0, 200) : "no_pairing_code_second_attempt",
+    _retried: true,
+  };
 }
 
 export async function connectInstance(name: string) {
