@@ -48,12 +48,13 @@ export function buildProxyConfig(name: string, manual?: ManualProxy) {
 // Pipeline:
 //   1. POST /instance/create — Evolution as vezes devolve 200 com qrcode.count:0 antes do
 //      Baileys terminar o handshake via proxy. Nao falhamos imediatamente nesse caso.
-//   2. Poll GET /instance/connect/{name} a cada 2s por ate 8s para recuperar o pairing code
+//   2. Poll GET /instance/connect/{name} a cada 1s por ate 6s para recuperar o pairing code
 //      que apareceu apos o create retornar.
 //   3. Se ainda nada: deleta a instância, espera 1s, tenta tudo de novo (1 retry).
-//   4. Apos a 2a tentativa: retorna a resposta com flags _firstError/_secondError para o log.
+//   4. Antes de retornar com sucesso, faz UM refresh final do code via /instance/connect
+//      para garantir que o code mostrado ao user tenha validade WhatsApp maxima (~40s).
 //
-// Total worst-case: ~50s. /api/chips/connect tem maxDuration 60.
+// Total worst-case: ~45s. /api/chips/connect tem maxDuration 60.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function createInstance(name: string, number: string, manualProxy?: ManualProxy): Promise<any> {
   const body = JSON.stringify({
@@ -69,21 +70,24 @@ export async function createInstance(name: string, number: string, manualProxy?:
     return res.json();
   };
 
-  // Poll /instance/connect/{name} para recuperar pairing code emitido tardiamente.
-  // Devolve { pairingCode, code, base64 } ou null se nao apareceu no janela.
-  const pollPairingCode = async (windowMs: number): Promise<{ pairingCode: string; code?: string; base64?: string } | null> => {
+  // GET /instance/connect/{name} — usado para polling e para o refresh final.
+  // Retorna { pairingCode, code, base64 } se Baileys ja tem o code disponivel.
+  const fetchPairingCode = async (timeoutMs = 5000): Promise<{ pairingCode: string; code?: string; base64?: string } | null> => {
+    try {
+      const res = await timedFetch(`${API_URL}/instance/connect/${name}`, { method: "GET", headers }, timeoutMs);
+      const data = (await res.json()) as { pairingCode?: string; code?: string; base64?: string };
+      if (data?.pairingCode) return { pairingCode: data.pairingCode, code: data.code, base64: data.base64 };
+    } catch { /* ignore */ }
+    return null;
+  };
+
+  // Poll com intervalo de 1s (1s entre tentativas, ate 6 tentativas = ~6s janela).
+  const pollPairingCode = async (windowMs: number) => {
     const deadline = Date.now() + windowMs;
     while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 2000));
-      try {
-        const res = await timedFetch(`${API_URL}/instance/connect/${name}`, { method: "GET", headers }, 5000);
-        const data = (await res.json()) as { pairingCode?: string; code?: string; base64?: string };
-        if (data?.pairingCode) {
-          return { pairingCode: data.pairingCode, code: data.code, base64: data.base64 };
-        }
-      } catch {
-        // ignore — proximo poll tenta de novo
-      }
+      await new Promise((r) => setTimeout(r, 1000));
+      const got = await fetchPairingCode(4000);
+      if (got) return got;
     }
     return null;
   };
@@ -95,20 +99,29 @@ export async function createInstance(name: string, number: string, manualProxy?:
     } catch { /* silencioso */ }
   };
 
-  const attachPolled = (
-    response: Record<string, unknown>,
-    polled: { pairingCode: string; code?: string; base64?: string },
-  ) => ({
-    ...response,
-    qrcode: {
-      ...((response.qrcode as Record<string, unknown>) || {}),
-      pairingCode: polled.pairingCode,
-      code: polled.code,
-      base64: polled.base64,
-      count: 1,
-    },
-    _recovered_via_poll: true,
-  });
+  // Faz um refresh final do pairing code logo antes de retornar.
+  // Se Baileys re-emitir aqui, o user ganha a janela cheia de validade (~40s).
+  // Se falhar, devolve o code que ja tinha.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const attachFreshCode = async (response: Record<string, unknown>, extras: Record<string, unknown> = {}): Promise<any> => {
+    const fresh = await fetchPairingCode(4000);
+    const qrcode = response.qrcode as Record<string, unknown> | undefined;
+    if (fresh) {
+      return {
+        ...response,
+        qrcode: {
+          ...(qrcode || {}),
+          pairingCode: fresh.pairingCode,
+          code: fresh.code,
+          base64: fresh.base64,
+          count: 1,
+        },
+        _refreshed: true,
+        ...extras,
+      };
+    }
+    return { ...response, ...extras };
+  };
 
   // Tentativa 1
   let first: Record<string, unknown> | null = null;
@@ -120,12 +133,17 @@ export async function createInstance(name: string, number: string, manualProxy?:
   }
 
   if ((first as { qrcode?: { pairingCode?: string } })?.qrcode?.pairingCode) {
-    return first;
+    return attachFreshCode(first!);
   }
 
   if (first && (first as { instance?: { instanceName?: string } }).instance?.instanceName === name) {
-    const polled = await pollPairingCode(8000);
-    if (polled) return attachPolled(first, polled);
+    const polled = await pollPairingCode(6000);
+    if (polled) {
+      return attachFreshCode(
+        { ...first, qrcode: { ...(first.qrcode as Record<string, unknown> || {}), ...polled, count: 1 } },
+        { _recovered_via_poll: true },
+      );
+    }
   }
 
   // Tentativa 2 (apos limpar e backoff de 1s)
@@ -141,12 +159,17 @@ export async function createInstance(name: string, number: string, manualProxy?:
   }
 
   if ((second as { qrcode?: { pairingCode?: string } })?.qrcode?.pairingCode) {
-    return { ...second, _retried: true };
+    return attachFreshCode(second!, { _retried: true });
   }
 
   if (second && (second as { instance?: { instanceName?: string } }).instance?.instanceName === name) {
-    const polled = await pollPairingCode(8000);
-    if (polled) return { ...attachPolled(second, polled), _retried: true };
+    const polled = await pollPairingCode(6000);
+    if (polled) {
+      return attachFreshCode(
+        { ...second, qrcode: { ...(second.qrcode as Record<string, unknown> || {}), ...polled, count: 1 } },
+        { _recovered_via_poll: true, _retried: true },
+      );
+    }
   }
 
   // Tudo falhou — limpa a instância residual e devolve a melhor resposta com diagnostico.
