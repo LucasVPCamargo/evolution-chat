@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createInstance } from "@/lib/evolution";
+import { connectInstance, createInstance } from "@/lib/evolution";
 import { requireAuth } from "@/lib/auth";
 
-export const maxDuration = 15;
+export const maxDuration = 30;
 
 export async function POST(req: NextRequest) {
   const denied = await requireAuth();
@@ -25,9 +25,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Step 1: Create instance — returns pairing code immediately
+    // Step 1: Create instance — returns pairing code immediately (na maioria das vezes)
     const instance = await createInstance(name, number);
-    const pairingCode = instance?.qrcode?.pairingCode || null;
+    let pairingCode = instance?.qrcode?.pairingCode || null;
+
+    // Step 2 (fallback): as vezes Baileys ainda esta inicializando quando /create
+    // responde, e qrcode.pairingCode vem null. Espera 2.5s e tenta pegar via
+    // /instance/connect — o code costuma estar disponivel ai.
+    if (!pairingCode) {
+      await new Promise((r) => setTimeout(r, 2500));
+      try {
+        const c = await connectInstance(name);
+        pairingCode = c?.pairingCode || null;
+      } catch { /* ignore — vai cair no erro abaixo */ }
+    }
 
     if (!pairingCode) {
       return NextResponse.json(
