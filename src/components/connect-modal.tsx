@@ -37,7 +37,11 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
   const [precheck, setPrecheck] = useState<"checking" | "ok" | "failed">("checking");
   const [services, setServices] = useState<ServiceHealth[]>([]);
   const [proxyMode, setProxyMode] = useState<"auto" | "manual">("auto");
-  const [manualProxyStr, setManualProxyStr] = useState("");
+  // Pre-preenchido pro proxy marketbet que usamos default. Acelera conectar varios
+  // chips em sequencia — user so edita se for proxy diferente.
+  const [manualProxyStr, setManualProxyStr] = useState(
+    "74.81.81.81:823:14077f61e769c610ee72__cr.br:248b481519b58e7e",
+  );
 
   const NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
   const nameInvalid = name.length > 0 && !NAME_PATTERN.test(name);
