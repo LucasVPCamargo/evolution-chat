@@ -16,8 +16,9 @@ export interface ProxyDetails {
   host?: string;
   port?: string;
   protocol?: string;
-  username?: string;
-  password?: string;
+  // session sticky-id (parseada server-side a partir do password). NAO tem
+  // username/password — credenciais ficam server-side.
+  session?: string | null;
 }
 
 interface ChipCardProps {
@@ -46,8 +47,7 @@ export function ChipCard({
   // chips em close ou connecting podem ser resetados.
   const canReset = !isOnline;
 
-  const sessionMatch = proxyDetails?.password?.match(/session-(.+)$/);
-  const sessionName = sessionMatch ? sessionMatch[1] : null;
+  const sessionName = proxyDetails?.session ?? null;
 
   return (
     <div

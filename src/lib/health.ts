@@ -104,84 +104,17 @@ export async function checkProxy(): Promise<ServiceHealth> {
   }
 }
 
-export interface ProxyConfig {
-  host?: string;
-  port?: string;
-  protocol?: string;
-  username?: string;
-  password?: string;
-}
+// Cache em memoria do health pra evitar bater nos 3 servicos a cada GET.
+// Evolution e Chatwoot sao baratos mas checkProxy custa 5-10s (via IPRoyal).
+// 30s e suficiente — health raramente muda em janelas curtas.
+const HEALTH_CACHE_TTL_MS = 30_000;
+let healthCache: { ts: number; data: HealthResponse } | null = null;
 
-export async function checkProxyForInstance(
-  instanceName: string,
-  proxyConfig?: ProxyConfig
-): Promise<{ ip: string; country: string; city: string; latencyMs: number } | null> {
-  try {
-    const { ProxyAgent } = await import("undici");
-    const host = proxyConfig?.host || process.env.PROXY_HOST!;
-    const port = proxyConfig?.port || process.env.PROXY_PORT!;
-    const username = proxyConfig?.username || process.env.PROXY_USERNAME!;
-    const password = proxyConfig?.password || `${process.env.PROXY_PASSWORD!}_country-br_session-${instanceName}`;
-    const proxyUrl = `http://${username}:${password}@${host}:${port}`;
-    const agent = new ProxyAgent(proxyUrl);
-    const start = Date.now();
-    const res = await fetch("http://ip-api.com/json/?fields=status,country,countryCode,city,query", {
-      // @ts-expect-error dispatcher is valid in Node.js with undici
-      dispatcher: agent,
-      signal: AbortSignal.timeout(10000),
-    });
-    const data = await res.json();
-    return {
-      ip: data.query,
-      country: data.countryCode,
-      city: data.city,
-      latencyMs: Date.now() - start,
-    };
-  } catch {
-    return null;
+export async function runHealthChecks(force = false): Promise<HealthResponse> {
+  if (!force && healthCache && Date.now() - healthCache.ts < HEALTH_CACHE_TTL_MS) {
+    return healthCache.data;
   }
-}
 
-// Pre-check de proxy manual antes de gastar tempo no /proxy/set da Evolution.
-// 1 tentativa rapida (6s) + 1 retry (6s). Total <=12s. Confirma que o proxy responde
-// pela nossa rede; se aqui falhar, vai falhar tambem pra Evolution. Devolve detalhe
-// pra logar e mostrar erro especifico ao usuario.
-export async function preCheckManualProxy(proxy: {
-  host: string;
-  port: string;
-  username: string;
-  password: string;
-}): Promise<{ ok: true; ip: string; country: string; latencyMs: number } | { ok: false; reason: string; latencyMs: number }> {
-  const attempt = async (timeoutMs: number) => {
-    const start = Date.now();
-    try {
-      const { ProxyAgent } = await import("undici");
-      const proxyUrl = `http://${proxy.username}:${proxy.password}@${proxy.host}:${proxy.port}`;
-      const agent = new ProxyAgent(proxyUrl);
-      const res = await fetch("http://ip-api.com/json/?fields=status,country,countryCode,city,query", {
-        // @ts-expect-error dispatcher is valid in Node.js with undici
-        dispatcher: agent,
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      const data = await res.json();
-      const latencyMs = Date.now() - start;
-      if (data?.status === "success" && data?.query) {
-        return { ok: true as const, ip: data.query as string, country: (data.countryCode || "??") as string, latencyMs };
-      }
-      return { ok: false as const, reason: `ip-api status=${data?.status || "unknown"}`, latencyMs };
-    } catch (e) {
-      return { ok: false as const, reason: String(e).slice(0, 120), latencyMs: Date.now() - start };
-    }
-  };
-
-  const first = await attempt(6000);
-  if (first.ok) return first;
-  // Retry imediato — proxies residenciais sticky as vezes tem cold-start na sessao.
-  const second = await attempt(6000);
-  return second;
-}
-
-export async function runHealthChecks(): Promise<HealthResponse> {
   const results = await Promise.allSettled([
     checkEvolution(),
     checkChatwoot(),
@@ -199,9 +132,11 @@ export async function runHealthChecks(): Promise<HealthResponse> {
     };
   });
 
-  return {
+  const data: HealthResponse = {
     healthy: services.every((s) => s.ok),
     timestamp: new Date().toISOString(),
     services,
   };
+  healthCache = { ts: Date.now(), data };
+  return data;
 }

@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { Plus, RefreshCw, LogOut, Copy, Check, X } from "lucide-react";
+import { Plus, RefreshCw, LogOut, Copy, Check, X, Layers } from "lucide-react";
 import { ChipCard, type ProxyDetails } from "@/components/chip-card";
 import { ConnectModal } from "@/components/connect-modal";
+import { BulkConnectModal } from "@/components/bulk-connect-modal";
 import { StatsBar } from "@/components/stats-bar";
 
 interface Chip {
@@ -23,6 +24,7 @@ export default function Dashboard() {
   const [chips, setChips] = useState<Chip[]>([]);
   const [loading, setLoading] = useState(true);
   const [showConnect, setShowConnect] = useState(false);
+  const [showBulk, setShowBulk] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [resetState, setResetState] = useState<{
     name: string;
@@ -70,7 +72,10 @@ export default function Dashboard() {
     if (status !== "authenticated") return;
     loadChips();
     loadHealth();
-    const refresh = setInterval(() => { loadChips(); loadHealth(); }, 30000);
+    // 60s eh um bom equilibrio: refresh suficiente pra ver mudancas de status sem
+    // sobrecarregar Evolution/Vercel. User pode forcar refresh imediato pelo botao
+    // "Atualizar" no header.
+    const refresh = setInterval(() => { loadChips(); loadHealth(); }, 60000);
     return () => clearInterval(refresh);
   }, [status, loadChips, loadHealth]);
 
@@ -87,17 +92,6 @@ export default function Dashboard() {
     setHealthLoading(true);
     loadChips();
     loadHealth();
-  }
-
-  function proxyDetailsToManual(p: ProxyDetails | null) {
-    if (!p?.host || !p?.port || !p?.username || !p?.password) return undefined;
-    return {
-      host: p.host,
-      port: p.port,
-      username: p.username,
-      password: p.password,
-      protocol: p.protocol,
-    };
   }
 
   async function handleReset(name: string, number: string, proxyDetails: ProxyDetails | null) {
@@ -135,19 +129,18 @@ export default function Dashboard() {
     }
   }
 
-  // Apos user clicar "Pronto, Conectei!" no reset: roda setup pra restaurar proxy
-  // (manual se chip tinha; senao IPRoyal default) + Chatwoot inbox novo.
+  // Apos "Pronto, Conectei!" do reset: roda setup pra (re)configurar proxy IPRoyal
+  // default + Chatwoot inbox novo. Reset nao reutiliza proxy manual antigo —
+  // credenciais nao vivem no frontend (apenas server-side). Se o chip era manual,
+  // re-conectar manualmente via "Novo Chip" no modo manual.
   async function finishReset() {
     if (!resetState) return;
     setResetState({ ...resetState, finishing: true });
     try {
-      const body: Record<string, unknown> = { name: resetState.name };
-      const manualProxy = proxyDetailsToManual(resetState.proxyDetails);
-      if (manualProxy) body.manualProxy = manualProxy;
       await fetch("/api/chips/setup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ name: resetState.name }),
       });
     } catch { /* setup eh best-effort */ }
     setResetState(null);
@@ -192,6 +185,19 @@ export default function Dashboard() {
           >
             <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
             Atualizar
+          </button>
+          <button
+            onClick={() => setShowBulk(true)}
+            disabled={!health?.services?.find((s) => s.service === "evolution")?.ok}
+            title="Conectar varios chips em sequencia (cola lista nome,numero)"
+            className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+              health?.services?.find((s) => s.service === "evolution")?.ok
+                ? "border-emerald-500/30 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-900/40"
+                : "cursor-not-allowed border-zinc-800 bg-zinc-900 text-zinc-600"
+            }`}
+          >
+            <Layers className="h-4 w-4" />
+            Lote
           </button>
           <button
             onClick={() => setShowConnect(true)}
@@ -249,6 +255,13 @@ export default function Dashboard() {
       {showConnect && (
         <ConnectModal
           onClose={() => setShowConnect(false)}
+          onSuccess={loadChips}
+        />
+      )}
+
+      {showBulk && (
+        <BulkConnectModal
+          onClose={() => setShowBulk(false)}
           onSuccess={loadChips}
         />
       )}
