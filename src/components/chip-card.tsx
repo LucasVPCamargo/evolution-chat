@@ -1,14 +1,12 @@
 "use client";
 
-import { useState } from "react";
 import {
   Wifi,
   WifiOff,
   Shield,
   MessageSquare,
   Trash2,
-  RotateCw,
-  Link,
+  RefreshCw,
   Globe,
   Loader2,
 } from "lucide-react";
@@ -22,13 +20,6 @@ export interface ProxyDetails {
   password?: string;
 }
 
-interface ProxyIpResult {
-  ip: string;
-  country: string;
-  city: string;
-  latencyMs: number;
-}
-
 interface ChipCardProps {
   name: string;
   number: string;
@@ -36,9 +27,8 @@ interface ChipCardProps {
   proxy: boolean;
   proxyDetails: ProxyDetails | null;
   chatwoot: boolean;
-  onRestart: (name: string) => void;
   onDelete: (name: string) => void;
-  onReconnect: (name: string) => void;
+  onReset: (name: string, number: string, proxyDetails: ProxyDetails | null) => void;
 }
 
 export function ChipCard({
@@ -48,35 +38,13 @@ export function ChipCard({
   proxy,
   proxyDetails,
   chatwoot,
-  onRestart,
   onDelete,
-  onReconnect,
+  onReset,
 }: ChipCardProps) {
   const isOnline = status === "open";
   const isConnecting = status === "connecting";
-  const isClosed = status === "close";
-  const [proxyIp, setProxyIp] = useState<ProxyIpResult | null>(null);
-  const [checkingIp, setCheckingIp] = useState(false);
-  const [ipError, setIpError] = useState(false);
-
-  async function handleCheckIp() {
-    setCheckingIp(true);
-    setIpError(false);
-    try {
-      const res = await fetch("/api/chips/proxy-check", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
-      if (!res.ok) { setIpError(true); return; }
-      const data = await res.json();
-      setProxyIp(data);
-    } catch {
-      setIpError(true);
-    } finally {
-      setCheckingIp(false);
-    }
-  }
+  // chips em close ou connecting podem ser resetados.
+  const canReset = !isOnline;
 
   const sessionMatch = proxyDetails?.password?.match(/session-(.+)$/);
   const sessionName = sessionMatch ? sessionMatch[1] : null;
@@ -135,7 +103,6 @@ export function ChipCard({
         </div>
       </div>
 
-      {/* Proxy Details */}
       {proxy && proxyDetails && (
         <div className="mt-3 rounded-lg bg-zinc-800/60 px-3 py-2 text-xs">
           <div className="flex items-center gap-1.5 text-zinc-400">
@@ -151,50 +118,20 @@ export function ChipCard({
               Sessao: <span className="font-mono text-zinc-400">{sessionName}</span>
             </div>
           )}
-          <div className="mt-1.5 flex items-center gap-2">
-            {proxyIp ? (
-              <span className={`font-mono ${proxyIp.country === "BR" ? "text-emerald-400" : "text-amber-400"}`}>
-                {proxyIp.ip} - {proxyIp.city}, {proxyIp.country}
-                <span className="ml-1 text-zinc-600">({proxyIp.latencyMs}ms)</span>
-              </span>
-            ) : ipError ? (
-              <span className="text-red-400">Proxy sem resposta</span>
-            ) : null}
-            <button
-              onClick={handleCheckIp}
-              disabled={checkingIp}
-              className="ml-auto flex items-center gap-1 rounded bg-zinc-700/60 px-2 py-0.5 text-[10px] text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-300"
-            >
-              {checkingIp ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <>
-                  <Globe className="h-3 w-3" />
-                  Checar IP
-                </>
-              )}
-            </button>
-          </div>
         </div>
       )}
 
       <div className="mt-4 flex gap-2">
-        {isClosed && (
+        {canReset && (
           <button
-            onClick={() => onReconnect(name)}
+            onClick={() => onReset(name, number, proxyDetails)}
             className="flex items-center gap-1.5 rounded-lg bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-400 transition-colors hover:bg-emerald-500/25"
+            title="Deleta a instancia e cria de novo (gera novo pairing code; mantem o mesmo nome e numero)"
           >
-            <Link className="h-3.5 w-3.5" />
-            Reconectar
+            <RefreshCw className="h-3.5 w-3.5" />
+            Resetar
           </button>
         )}
-        <button
-          onClick={() => onRestart(name)}
-          className="flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-400 transition-colors hover:bg-zinc-700 hover:text-zinc-300"
-        >
-          <RotateCw className="h-3.5 w-3.5" />
-          Reiniciar
-        </button>
         <button
           onClick={() => onDelete(name)}
           className="flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-xs text-zinc-500 transition-colors hover:bg-red-500/15 hover:text-red-400"

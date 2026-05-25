@@ -4,18 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { Plus, RefreshCw, LogOut, Copy, Check, X } from "lucide-react";
-import { ChipCard } from "@/components/chip-card";
+import { ChipCard, type ProxyDetails } from "@/components/chip-card";
 import { ConnectModal } from "@/components/connect-modal";
 import { StatsBar } from "@/components/stats-bar";
-
-interface ProxyDetails {
-  enabled?: boolean;
-  host?: string;
-  port?: string;
-  protocol?: string;
-  username?: string;
-  password?: string;
-}
 
 interface Chip {
   name: string;
@@ -33,12 +24,18 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [showConnect, setShowConnect] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [reconnectCode, setReconnectCode] = useState<string | null>(null);
-  const [reconnectName, setReconnectName] = useState<string | null>(null);
+  const [resetState, setResetState] = useState<{
+    name: string;
+    number: string;
+    proxyDetails: ProxyDetails | null;
+    pairingCode: string | null;
+    loading: boolean;
+    error: string | null;
+    finishing: boolean;
+  } | null>(null);
   const [copied, setCopied] = useState(false);
   const [health, setHealth] = useState<{ healthy: boolean; services: { service: string; ok: boolean; latencyMs: number; detail?: string; ip?: string; country?: string; city?: string }[]; timestamp: string } | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
-  const [lastHeal, setLastHeal] = useState<{ healed: number; unreachable: number; timestamp: string } | null>(null);
 
   const loadChips = useCallback(async () => {
     try {
@@ -69,32 +66,13 @@ export default function Dashboard() {
     if (status === "unauthenticated") router.push("/login");
   }, [status, router]);
 
-  const runProxyHeal = useCallback(async () => {
-    try {
-      const res = await fetch("/api/chips/proxy-heal", { method: "POST" });
-      const data = await res.json();
-      setLastHeal({ healed: data.healed, unreachable: data.unreachable, timestamp: data.timestamp });
-      if (data.healed > 0) loadChips();
-      // Marcar chips stale como "close" no estado local imediatamente
-      if (data.staleDetected && data.staleDetected.length > 0) {
-        const staleSet = new Set(data.staleDetected as string[]);
-        setChips(prev => prev.map(c =>
-          staleSet.has(c.name) ? { ...c, connectionStatus: "connecting" } : c
-        ));
-      }
-    } catch { /* silent */ }
-  }, [loadChips]);
-
   useEffect(() => {
     if (status !== "authenticated") return;
     loadChips();
     loadHealth();
     const refresh = setInterval(() => { loadChips(); loadHealth(); }, 30000);
-    // Auto-heal proxies a cada 5 minutos
-    const healTimer = setTimeout(() => runProxyHeal(), 10000); // primeira vez 10s após load
-    const healInterval = setInterval(runProxyHeal, 5 * 60 * 1000);
-    return () => { clearInterval(refresh); clearTimeout(healTimer); clearInterval(healInterval); };
-  }, [status, loadChips, loadHealth, runProxyHeal]);
+    return () => clearInterval(refresh);
+  }, [status, loadChips, loadHealth]);
 
   if (status === "loading" || status === "unauthenticated") {
     return (
@@ -111,39 +89,69 @@ export default function Dashboard() {
     loadHealth();
   }
 
-  async function handleRestart(name: string) {
-    await fetch("/api/chips/restart", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
-    setTimeout(loadChips, 3000);
+  function proxyDetailsToManual(p: ProxyDetails | null) {
+    if (!p?.host || !p?.port || !p?.username || !p?.password) return undefined;
+    return {
+      host: p.host,
+      port: p.port,
+      username: p.username,
+      password: p.password,
+      protocol: p.protocol,
+    };
   }
 
-  async function handleReconnect(name: string) {
+  async function handleReset(name: string, number: string, proxyDetails: ProxyDetails | null) {
+    if (!confirm(`Resetar ${name}?\nVai deletar a instancia (e o inbox do Chatwoot) e criar do zero. Voce vai receber um novo codigo de pareamento.`)) return;
+    setResetState({ name, number, proxyDetails, pairingCode: null, loading: true, error: null, finishing: false });
     try {
-      const res = await fetch("/api/chips/reconnect", {
+      // Step 1: delete tudo (chip + inbox Chatwoot)
+      await fetch("/api/chips/disconnect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
       });
-      const data = await res.json();
-      const code = data.pairingCode;
-      if (code) {
-        setReconnectName(name);
-        setReconnectCode(code);
+      // Step 2: cria de novo igual fluxo normal — devolve pairing code em 2-3s
+      const connectRes = await fetch("/api/chips/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, number }),
+      });
+      const connectData = await connectRes.json();
+      if (!connectRes.ok || !connectData.pairingCode) {
+        setResetState((prev) => prev && { ...prev, loading: false, error: connectData.error || "Falha ao gerar codigo" });
+        return;
       }
-    } catch {
-      // ignore
+      setResetState((prev) => prev && { ...prev, loading: false, pairingCode: connectData.pairingCode });
+    } catch (e) {
+      setResetState((prev) => prev && { ...prev, loading: false, error: `Erro: ${String(e).slice(0, 100)}` });
     }
   }
 
-  function handleCopyCode() {
-    if (reconnectCode) {
-      navigator.clipboard.writeText(reconnectCode);
+  function handleCopyResetCode() {
+    if (resetState?.pairingCode) {
+      navigator.clipboard.writeText(resetState.pairingCode);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
+  }
+
+  // Apos user clicar "Pronto, Conectei!" no reset: roda setup pra restaurar proxy
+  // (manual se chip tinha; senao IPRoyal default) + Chatwoot inbox novo.
+  async function finishReset() {
+    if (!resetState) return;
+    setResetState({ ...resetState, finishing: true });
+    try {
+      const body: Record<string, unknown> = { name: resetState.name };
+      const manualProxy = proxyDetailsToManual(resetState.proxyDetails);
+      if (manualProxy) body.manualProxy = manualProxy;
+      await fetch("/api/chips/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch { /* setup eh best-effort */ }
+    setResetState(null);
+    loadChips();
   }
 
   async function handleDelete(name: string) {
@@ -162,7 +170,6 @@ export default function Dashboard() {
 
   return (
     <main className="mx-auto max-w-6xl px-6 py-8">
-      {/* Header */}
       <div className="mb-8 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-white">Evolution Chat</h1>
@@ -183,17 +190,15 @@ export default function Dashboard() {
             disabled={refreshing}
             className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-300"
           >
-            <RefreshCw
-              className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`}
-            />
+            <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
             Atualizar
           </button>
           <button
             onClick={() => setShowConnect(true)}
-            disabled={!health?.healthy}
-            title={!health?.healthy ? "Servicos indisponiveis — verifique o status" : ""}
+            disabled={!health?.services?.find((s) => s.service === "evolution")?.ok}
+            title={!health?.services?.find((s) => s.service === "evolution")?.ok ? "Evolution API indisponivel" : ""}
             className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-              health?.healthy
+              health?.services?.find((s) => s.service === "evolution")?.ok
                 ? "bg-emerald-600 text-white hover:bg-emerald-500"
                 : "cursor-not-allowed bg-zinc-800 text-zinc-600"
             }`}
@@ -204,12 +209,10 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Stats + Health */}
       <div className="mb-6">
-        <StatsBar total={chips.length} online={online} connecting={connecting} offline={offline} health={health} healthLoading={healthLoading} lastHeal={lastHeal} />
+        <StatsBar total={chips.length} online={online} connecting={connecting} offline={offline} health={health} healthLoading={healthLoading} />
       </div>
 
-      {/* Chip Grid */}
       {loading ? (
         <div className="flex items-center justify-center py-20">
           <RefreshCw className="h-6 w-6 animate-spin text-zinc-600" />
@@ -219,12 +222,7 @@ export default function Dashboard() {
           <p className="text-zinc-500">Nenhum chip conectado</p>
           <button
             onClick={() => setShowConnect(true)}
-            disabled={!health?.healthy}
-            className={`mt-4 flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-              health?.healthy
-                ? "bg-emerald-600 text-white hover:bg-emerald-500"
-                : "cursor-not-allowed bg-zinc-800 text-zinc-600"
-            }`}
+            className="mt-4 flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
           >
             <Plus className="h-4 w-4" />
             Conectar primeiro chip
@@ -241,9 +239,8 @@ export default function Dashboard() {
               proxy={!!chip.Proxy?.enabled}
               proxyDetails={chip.proxyDetails}
               chatwoot={!!chip.Chatwoot?.enabled}
-              onRestart={handleRestart}
               onDelete={handleDelete}
-              onReconnect={handleReconnect}
+              onReset={handleReset}
             />
           ))}
         </div>
@@ -256,51 +253,64 @@ export default function Dashboard() {
         />
       )}
 
-      {reconnectCode && (
+      {resetState && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-white">
-                Reconectar {reconnectName}
+                {resetState.pairingCode ? `Resetar ${resetState.name}` : `Resetando ${resetState.name}...`}
               </h2>
               <button
-                onClick={() => { setReconnectCode(null); setReconnectName(null); }}
+                onClick={() => { setResetState(null); loadChips(); }}
                 className="rounded-lg p-1 text-zinc-400 hover:bg-zinc-800"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
             <div className="mt-5 space-y-4">
-              <p className="text-sm text-zinc-400">
-                Digite este codigo no WhatsApp do celular:
-              </p>
-              <div className="flex items-center justify-between rounded-lg border border-emerald-500/30 bg-emerald-950/30 px-4 py-3">
-                <span className="font-mono text-2xl font-bold tracking-widest text-emerald-400">
-                  {reconnectCode}
-                </span>
-                <button
-                  onClick={handleCopyCode}
-                  className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800"
-                >
-                  {copied ? (
-                    <Check className="h-5 w-5 text-emerald-400" />
-                  ) : (
-                    <Copy className="h-5 w-5" />
-                  )}
-                </button>
-              </div>
-              <p className="text-xs text-zinc-500">
-                No celular: WhatsApp &gt; Dispositivos conectados &gt; Conectar dispositivo &gt; Conectar com numero de telefone
-              </p>
-              <p className="text-xs text-amber-400">
-                Voce tem 40 segundos para usar o codigo antes de expirar
-              </p>
-              <button
-                onClick={() => { setReconnectCode(null); setReconnectName(null); loadChips(); }}
-                className="w-full rounded-lg bg-emerald-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500"
-              >
-                Pronto, Conectei!
-              </button>
+              {resetState.loading ? (
+                <div className="flex items-center justify-center gap-2 py-6 text-sm text-zinc-400">
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  Deletando e recriando...
+                </div>
+              ) : resetState.error ? (
+                <p className="rounded-lg bg-red-900/30 px-3 py-2 text-sm text-red-400">{resetState.error}</p>
+              ) : resetState.pairingCode ? (
+                <>
+                  <p className="text-sm text-zinc-400">Digite este codigo no WhatsApp do celular:</p>
+                  <div className="flex items-center justify-between rounded-lg border border-emerald-500/30 bg-emerald-950/30 px-4 py-3">
+                    <span className="font-mono text-2xl font-bold tracking-widest text-emerald-400">
+                      {resetState.pairingCode}
+                    </span>
+                    <button
+                      onClick={handleCopyResetCode}
+                      className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800"
+                    >
+                      {copied ? <Check className="h-5 w-5 text-emerald-400" /> : <Copy className="h-5 w-5" />}
+                    </button>
+                  </div>
+                  <p className="text-xs text-zinc-500">
+                    No celular: WhatsApp &gt; Dispositivos conectados &gt; Conectar dispositivo &gt; Conectar com numero de telefone
+                  </p>
+                  <p className="text-xs text-amber-400">
+                    Voce tem 40 segundos para usar o codigo antes de expirar
+                  </p>
+                  <button
+                    onClick={finishReset}
+                    disabled={resetState.finishing}
+                    className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+                  >
+                    {resetState.finishing ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 animate-spin" />
+                        Configurando proxy e Chatwoot...
+                      </>
+                    ) : (
+                      "Pronto, Conectei!"
+                    )}
+                  </button>
+                </>
+              ) : null}
             </div>
           </div>
         </div>
