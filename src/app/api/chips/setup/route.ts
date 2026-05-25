@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { setChatwoot, setSettings, type ManualProxy } from "@/lib/evolution";
+import { setChatwoot, setProxy, setSettings, type ManualProxy } from "@/lib/evolution";
 import { createInbox, addAllAgentsToInbox } from "@/lib/chatwoot";
 import { requireAuth } from "@/lib/auth";
 import { chipLog } from "@/lib/logger";
@@ -42,8 +42,7 @@ export async function POST(req: NextRequest) {
       proxy_host: manualProxy?.host,
     });
 
-    // O proxy ja foi configurado no /api/chips/connect (inline no instance/create).
-    // Aqui so cuidamos do redsocks-exclude (manual) e do Chatwoot/settings.
+    // Para proxy manual, exclui o IP do redsocks antes de configurar.
     if (manualProxy?.host) {
       await fetch(
         `${process.env.EVOLUTION_API_URL!.replace(":8080", ":9090")}/exclude/${manualProxy.host}`,
@@ -57,7 +56,10 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const [inboxResult, settingsResult] = await Promise.all([
+    // Setup roda APOS o pairing — momento certo de configurar proxy + Chatwoot.
+    // Tudo em paralelo, cada um isolado (falha de um nao bloqueia os outros).
+    const [proxyResult, inboxResult, settingsResult] = await Promise.all([
+      safe("proxy", () => setProxy(name, manualProxy)),
       safe("inbox", () => createInbox(name)),
       safe("settings", () => setSettings(name)),
     ]);
@@ -70,7 +72,7 @@ export async function POST(req: NextRequest) {
 
     const chatwootResult = await safe("chatwoot", () => setChatwoot(name));
 
-    const results = [inboxResult, settingsResult, agentsResult, chatwootResult].filter(
+    const results = [proxyResult, inboxResult, settingsResult, agentsResult, chatwootResult].filter(
       (r): r is NonNullable<typeof r> => r !== null,
     );
     const warnings = results.filter((r) => !r.ok).map((r) => ({ step: r.label, error: r.error }));
