@@ -136,9 +136,23 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
     }
   }
 
+  // Apos pareamento, WhatsApp cria uma "conversa" no Chatwoot com o proprio
+  // numero do chip (notificacao "device linked"). Esse cleanup resolve essa
+  // conversa automaticamente pra nao poluir a inbox de atendimento.
+  // Fire-and-forget: nao bloqueia fechamento do modal.
+  function triggerSelfConversationCleanup() {
+    if (!name || !number) return;
+    void fetch("/api/chips/cleanup-self-conversation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, number }),
+    }).catch(() => null);
+  }
+
   async function handleDone() {
     setFinishing(true);
     await runSetup();
+    triggerSelfConversationCleanup();
     setFinishing(false);
     onSuccess();
     onClose();
@@ -148,6 +162,7 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
     // If pairing code was shown, run setup even if closing with X
     if (pairingCode && name) {
       runSetup(); // fire-and-forget
+      triggerSelfConversationCleanup();
     }
     onSuccess();
     onClose();

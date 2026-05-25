@@ -83,3 +83,79 @@ export async function deleteInboxByName(chipName: string): Promise<number> {
   }
   return deleted;
 }
+
+export async function findInboxByName(chipName: string): Promise<{ id: number; name: string } | null> {
+  const data = await listInboxes();
+  const inboxes = data.payload ?? data ?? [];
+  return inboxes.find((i: { name: string }) => i.name === `WhatsApp - ${chipName}`) ?? null;
+}
+
+interface ChatwootConversation {
+  id: number;
+  meta?: {
+    sender?: { phone_number?: string; identifier?: string };
+  };
+  contact?: { phone_number?: string };
+}
+
+export async function listConversationsForInbox(inboxId: number, status: "open" | "all" = "open") {
+  const res = await timedFetch(
+    `${CHATWOOT_URL}/api/v1/accounts/${CHATWOOT_ACCOUNT_ID}/conversations?inbox_id=${inboxId}&status=${status}`,
+    { headers }
+  );
+  const data = await res.json();
+  const list: ChatwootConversation[] = data.data?.payload ?? data.data ?? data.payload ?? data ?? [];
+  return list;
+}
+
+export async function resolveConversation(conversationId: number) {
+  const res = await timedFetch(
+    `${CHATWOOT_URL}/api/v1/accounts/${CHATWOOT_ACCOUNT_ID}/conversations/${conversationId}/toggle_status`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ status: "resolved" }),
+    }
+  );
+  if (res.status === 200 || res.status === 204) return { success: true };
+  return res.json();
+}
+
+// Normaliza numero pra comparacao (so digitos, ultimos 11). Aceita "+5511...", "5511..."
+// e formas com espacos.
+function normalizeNumber(raw: string | undefined | null): string {
+  if (!raw) return "";
+  return raw.replace(/\D/g, "").slice(-11);
+}
+
+// Resolve conversas no inbox que pertencem ao proprio numero do chip (notificacao
+// "device linked" que aparece no Chatwoot logo apos pareamento). Faz ate `attempts`
+// tentativas espacadas, ja que a msg pode demorar alguns segundos pra chegar.
+export async function resolveSelfConversations(
+  inboxId: number,
+  chipNumber: string,
+  attempts = 3,
+  delayMs = 5000,
+): Promise<{ resolved: number; checked: number }> {
+  const targetNorm = normalizeNumber(chipNumber);
+  let resolved = 0;
+  let checked = 0;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, delayMs));
+    const convs = await listConversationsForInbox(inboxId, "open");
+    checked += convs.length;
+    const targets = convs.filter((c) => {
+      const phone = c.meta?.sender?.phone_number ?? c.contact?.phone_number;
+      const norm = normalizeNumber(phone);
+      return norm.length > 0 && norm === targetNorm;
+    });
+    for (const t of targets) {
+      const r = await resolveConversation(t.id);
+      if ("success" in r) resolved++;
+    }
+    if (resolved > 0) break;
+  }
+
+  return { resolved, checked };
+}
