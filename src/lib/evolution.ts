@@ -12,19 +12,7 @@ function timedFetch(url: string, init: RequestInit = {}, ms: number = DEFAULT_TI
   return fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
 }
 
-export interface ManualProxy {
-  host: string;
-  port: string;
-  username: string;
-  password: string;
-  protocol?: string;
-}
-
-// Fluxo confirmado em producao (deploy AmjndGdRE de 8/5): POST /instance/create
-// com qrcode:true devolve o pairing code direto em 2-3s. Proxy + Chatwoot sao
-// configurados depois via /api/chips/setup quando o user clica em "Pronto, Conectei!".
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export async function createInstance(name: string, number: string, _manualProxy?: ManualProxy) {
+export async function createInstance(name: string, number: string) {
   const res = await timedFetch(`${API_URL}/instance/create`, {
     method: "POST",
     headers,
@@ -35,6 +23,21 @@ export async function createInstance(name: string, number: string, _manualProxy?
       qrcode: true,
     }),
   }, 12000);
+  return res.json();
+}
+
+export async function connectInstance(name: string) {
+  const res = await timedFetch(`${API_URL}/instance/connect/${name}`, {
+    method: "GET",
+    headers,
+  }, 10000);
+  return res.json();
+}
+
+export async function getConnectionState(name: string) {
+  const res = await timedFetch(`${API_URL}/instance/connectionState/${name}`, {
+    headers,
+  }, 5000);
   return res.json();
 }
 
@@ -51,12 +54,33 @@ export async function deleteInstance(name: string) {
   return res.json();
 }
 
+export async function logoutInstance(name: string) {
+  const res = await timedFetch(`${API_URL}/instance/logout/${name}`, {
+    method: "DELETE",
+    headers,
+  });
+  return res.json();
+}
+
 export async function restartInstance(name: string) {
   const res = await timedFetch(`${API_URL}/instance/restart/${name}`, {
     method: "POST",
     headers,
   });
   return res.json();
+}
+
+export async function findProxy(name: string) {
+  const res = await timedFetch(`${API_URL}/proxy/find/${name}`, { headers }, 5000);
+  return res.json();
+}
+
+export interface ManualProxy {
+  host: string;
+  port: string;
+  username: string;
+  password: string;
+  protocol?: string;
 }
 
 export async function setProxy(name: string, manual?: ManualProxy) {
@@ -82,7 +106,7 @@ export async function setProxy(name: string, manual?: ManualProxy) {
     method: "POST",
     headers,
     body: JSON.stringify(body),
-  }, 25000);
+  });
   return res.json();
 }
 

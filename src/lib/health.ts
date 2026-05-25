@@ -104,17 +104,45 @@ export async function checkProxy(): Promise<ServiceHealth> {
   }
 }
 
-// Cache em memoria do health pra evitar bater nos 3 servicos a cada GET.
-// Evolution e Chatwoot sao baratos mas checkProxy custa 5-10s (via IPRoyal).
-// 30s e suficiente — health raramente muda em janelas curtas.
-const HEALTH_CACHE_TTL_MS = 30_000;
-let healthCache: { ts: number; data: HealthResponse } | null = null;
+export interface ProxyConfig {
+  host?: string;
+  port?: string;
+  protocol?: string;
+  username?: string;
+  password?: string;
+}
 
-export async function runHealthChecks(force = false): Promise<HealthResponse> {
-  if (!force && healthCache && Date.now() - healthCache.ts < HEALTH_CACHE_TTL_MS) {
-    return healthCache.data;
+export async function checkProxyForInstance(
+  instanceName: string,
+  proxyConfig?: ProxyConfig
+): Promise<{ ip: string; country: string; city: string; latencyMs: number } | null> {
+  try {
+    const { ProxyAgent } = await import("undici");
+    const host = proxyConfig?.host || process.env.PROXY_HOST!;
+    const port = proxyConfig?.port || process.env.PROXY_PORT!;
+    const username = proxyConfig?.username || process.env.PROXY_USERNAME!;
+    const password = proxyConfig?.password || `${process.env.PROXY_PASSWORD!}_country-br_session-${instanceName}`;
+    const proxyUrl = `http://${username}:${password}@${host}:${port}`;
+    const agent = new ProxyAgent(proxyUrl);
+    const start = Date.now();
+    const res = await fetch("http://ip-api.com/json/?fields=status,country,countryCode,city,query", {
+      // @ts-expect-error dispatcher is valid in Node.js with undici
+      dispatcher: agent,
+      signal: AbortSignal.timeout(10000),
+    });
+    const data = await res.json();
+    return {
+      ip: data.query,
+      country: data.countryCode,
+      city: data.city,
+      latencyMs: Date.now() - start,
+    };
+  } catch {
+    return null;
   }
+}
 
+export async function runHealthChecks(): Promise<HealthResponse> {
   const results = await Promise.allSettled([
     checkEvolution(),
     checkChatwoot(),
@@ -132,11 +160,9 @@ export async function runHealthChecks(force = false): Promise<HealthResponse> {
     };
   });
 
-  const data: HealthResponse = {
+  return {
     healthy: services.every((s) => s.ok),
     timestamp: new Date().toISOString(),
     services,
   };
-  healthCache = { ts: Date.now(), data };
-  return data;
 }

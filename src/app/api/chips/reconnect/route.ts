@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteInstance } from "@/lib/evolution";
-import { deleteInboxByName } from "@/lib/chatwoot";
+import { connectInstance } from "@/lib/evolution";
 import { requireAuth } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
@@ -17,15 +16,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const [result, inboxesDeleted] = await Promise.all([
-      deleteInstance(name),
-      deleteInboxByName(name).catch(() => 0),
-    ]);
+    const connection = await connectInstance(name);
+    const pairingCode = connection?.pairingCode || null;
 
-    return NextResponse.json({ ...result, inboxesDeleted });
+    return NextResponse.json({ pairingCode, connection });
   } catch (error) {
     return NextResponse.json(
-      { error: "Failed to disconnect chip", details: String(error) },
+      { error: "Failed to reconnect chip", details: String(error) },
       { status: 500 }
     );
   }

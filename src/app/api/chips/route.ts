@@ -1,36 +1,24 @@
 import { NextResponse } from "next/server";
-import { fetchInstances } from "@/lib/evolution";
+import { fetchInstances, findProxy } from "@/lib/evolution";
 import { requireAuth } from "@/lib/auth";
 
-// Campos que retornamos do Proxy pro frontend. NAO expomos `password` (credencial
-// real do proxy) nem `username` (parte da credencial). Sessao sticky e parseada
-// separadamente do password pra mostrar no card.
-interface SafeProxyDetails {
-  enabled: boolean;
-  host?: string;
-  port?: string;
-  protocol?: string;
-  session?: string | null;
-}
+const PROXY_LOOKUP_CONCURRENCY = 5;
 
-interface RawProxy {
-  enabled?: boolean;
-  host?: string;
-  port?: string;
-  protocol?: string;
-  password?: string;
-}
-
-function sanitizeProxy(raw: RawProxy | null | undefined): SafeProxyDetails | null {
-  if (!raw) return null;
-  const sessionMatch = raw.password?.match(/session-(.+)$/);
-  return {
-    enabled: !!raw.enabled,
-    host: raw.host,
-    port: raw.port,
-    protocol: raw.protocol,
-    session: sessionMatch ? sessionMatch[1] : null,
-  };
+async function mapBatched<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const i = cursor++;
+      out[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
 export async function GET() {
@@ -41,14 +29,20 @@ export async function GET() {
     const instances = await fetchInstances();
     if (!Array.isArray(instances)) return NextResponse.json(instances);
 
-    // fetchInstances ja retorna Proxy embedded com todos os campos — eliminado
-    // o N+1 antigo (era 1 fetchInstances + 45x findProxy). Agora 1 round-trip
-    // serve pra montar a lista inteira.
-    const enriched = (instances as Record<string, unknown>[]).map((inst) => ({
-      ...inst,
-      Proxy: inst.Proxy ? { enabled: (inst.Proxy as { enabled?: boolean }).enabled ?? false } : null,
-      proxyDetails: sanitizeProxy(inst.Proxy as RawProxy | null),
-    }));
+    const enriched = await mapBatched(
+      instances as Record<string, unknown>[],
+      PROXY_LOOKUP_CONCURRENCY,
+      async (inst) => {
+        const proxyEnabled = (inst.Proxy as { enabled?: boolean } | null)?.enabled;
+        if (!proxyEnabled) return { ...inst, proxyDetails: null };
+        try {
+          const proxyData = await findProxy(inst.name as string);
+          return { ...inst, proxyDetails: proxyData };
+        } catch {
+          return { ...inst, proxyDetails: null };
+        }
+      },
+    );
 
     return NextResponse.json(enriched);
   } catch (error) {

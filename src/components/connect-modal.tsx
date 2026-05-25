@@ -52,23 +52,11 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
       const res = await fetch("/api/health");
       const data = await res.json();
       setServices(data.services || []);
-      // Precheck "ok" so exige Evolution. Chatwoot e Proxy IPRoyal sao opcionais:
-      // - Manual: nenhum dos dois importa (proxy do user, setup tolera Chatwoot offline).
-      // - Auto: IPRoyal eh nice-to-have aqui — se cair, o flow ainda falha la na frente
-      //   com mensagem clara, mas o user pode optar por manual no proprio modal.
-      const evo = (data.services || []).find((s: ServiceHealth) => s.service === "evolution");
-      setPrecheck(evo?.ok ? "ok" : "failed");
+      setPrecheck(data.healthy ? "ok" : "failed");
     } catch {
       setPrecheck("failed");
       setServices([]);
     }
-  }
-
-  // Modo-aware: manual nunca depende de Chatwoot/Proxy IPRoyal.
-  function isServiceRequired(service: string): boolean {
-    if (service === "evolution") return true;
-    if (proxyMode === "manual") return false;
-    return true;
   }
 
   const serviceIcons: Record<string, typeof Server> = {
@@ -86,19 +74,13 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
   async function handleConnect() {
     setLoading(true);
     setError(null);
-    setStep("Configurando proxy e gerando codigo...");
+    setStep("Gerando codigo de pareamento...");
 
     try {
-      const body: Record<string, unknown> = { name, number };
-      if (proxyMode === "manual") {
-        const parsed = parseProxyString(manualProxyStr);
-        if (parsed) body.manualProxy = parsed;
-      }
-
       const res = await fetch("/api/chips/connect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ name, number }),
       });
       const data = await res.json();
 
@@ -201,25 +183,19 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
                   {services.map((svc) => {
                     const Icon = serviceIcons[svc.service] || Server;
                     const label = serviceLabels[svc.service] || svc.service;
-                    const required = isServiceRequired(svc.service);
-                    // Servicos nao-requeridos (modo manual + IPRoyal/Chatwoot) ficam
-                    // em cinza com "opcional", e a falha deles nao bloqueia o flow.
-                    const dim = !required;
-                    const colorOk = dim ? "text-zinc-500" : "text-emerald-400";
-                    const colorBad = dim ? "text-zinc-500" : "text-red-400";
                     return (
                       <div key={svc.service} className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                          <Icon className={`h-3.5 w-3.5 ${svc.ok ? colorOk : colorBad}`} />
-                          <span className={`text-xs ${svc.ok ? colorOk : colorBad}`}>{label}{dim ? " (opcional)" : ""}</span>
+                          <Icon className={`h-3.5 w-3.5 ${svc.ok ? "text-emerald-400" : "text-red-400"}`} />
+                          <span className={`text-xs ${svc.ok ? "text-emerald-300" : "text-red-300"}`}>{label}</span>
                         </div>
                         <div className="flex items-center gap-1.5">
                           {svc.ok ? (
-                            <CheckCircle2 className={`h-3.5 w-3.5 ${colorOk}`} />
+                            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
                           ) : (
-                            <AlertTriangle className={`h-3.5 w-3.5 ${colorBad}`} />
+                            <AlertTriangle className="h-3.5 w-3.5 text-red-400" />
                           )}
-                          <span className={`text-xs ${svc.ok ? colorOk : colorBad}`}>
+                          <span className={`text-xs ${svc.ok ? "text-emerald-500" : "text-red-500"}`}>
                             {svc.ok ? `OK (${svc.latencyMs}ms)` : svc.detail || "Erro"}
                           </span>
                         </div>
