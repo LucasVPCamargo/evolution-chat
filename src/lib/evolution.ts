@@ -43,6 +43,10 @@ export function buildProxyConfig(name: string, manual?: ManualProxy) {
   };
 }
 
+// Deadline absoluto pra criacao + retry caber em maxDuration. /api/chips/connect tem 90s;
+// reservamos 85s pra deixar 5s pro response/refresh final.
+const TOTAL_BUDGET_MS = 85_000;
+
 // Cria a instancia garantindo que Baileys NUNCA abra WS pro WhatsApp pelo IP do servidor.
 //
 // Evolution 2.3.7 ignora o campo `proxy` em /instance/create (testado: chips criados com
@@ -50,20 +54,26 @@ export function buildProxyConfig(name: string, manual?: ManualProxy) {
 //
 //   1. POST /instance/create { qrcode: false } — cria a instancia em estado "close" (Baileys
 //      NAO inicia ainda)
-//   2. POST /proxy/set/{name} — persiste o proxy no banco
+//   2. POST /proxy/set/{name} — persiste o proxy no banco. Evolution valida o proxy ANTES
+//      de salvar (faz uma request via proxy), entao precisa de timeout generoso: 25s.
 //   3. GET /proxy/find/{name} — verifica que o proxy ficou salvo. Se nao ficou, aborta.
 //   4. GET /instance/connect/{name} — Baileys inicia AGORA, ja com proxy ativo, e retorna
 //      o pairing code
-//   5. Se nao veio code: poll a cada 1s por ate 6s
-//   6. Refresh final via novo GET /instance/connect — maximiza validade WhatsApp (~40s)
+//   5. Se nao veio code: poll a cada 1s por ate 10s
+//   6. Refresh final via novo GET /instance/connect — maximiza validade WhatsApp (~40s),
+//      so executa se houver budget restante.
 //
-// Erros sao trackados em _firstError, _secondError; existe 1 retry (delete + recreate).
-// Worst-case ~50s. /api/chips/connect tem maxDuration 60.
+// Erros sao trackados em _firstError, _secondError; existe 1 retry (delete + recreate)
+// somente se houver budget restante. Cada step loga sua propria duracao em _step_durations.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function createInstance(name: string, number: string, manualProxy?: ManualProxy): Promise<any> {
   const proxyConfig = buildProxyConfig(name, manualProxy);
+  const startedAt = Date.now();
+  const stepDurations: Record<string, number> = {};
+  const remaining = () => TOTAL_BUDGET_MS - (Date.now() - startedAt);
 
   const createOnce = async () => {
+    const t0 = Date.now();
     const body = JSON.stringify({
       instanceName: name,
       integration: "WHATSAPP-BAILEYS",
@@ -71,31 +81,65 @@ export async function createInstance(name: string, number: string, manualProxy?:
       qrcode: false,
     });
     const res = await timedFetch(`${API_URL}/instance/create`, { method: "POST", headers, body }, 12000);
-    return res.json();
+    const data = await res.json();
+    stepDurations.create = Date.now() - t0;
+    return data;
   };
 
+  // 25s: Evolution valida o proxy (faz request HTTP via proxy) antes de salvar. Proxies BR
+  // residenciais com sticky-session as vezes chegam a >15s. Era 15s e batia TimeoutError em
+  // producao (vide STATUS-2026-05-22). Se a primeira falhar com erro, retentamos 1x com 15s
+  // — Evolution as vezes valida mais rapido na segunda chamada (cache de DNS/sessao).
   const setProxyOnce = async () => {
-    const res = await timedFetch(`${API_URL}/proxy/set/${name}`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(proxyConfig),
-    }, 15000);
-    return res.json();
+    const t0 = Date.now();
+    const doCall = async (timeoutMs: number) => {
+      const res = await timedFetch(`${API_URL}/proxy/set/${name}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(proxyConfig),
+      }, timeoutMs);
+      return res.json();
+    };
+    try {
+      const data = await doCall(25000);
+      stepDurations.set_proxy = Date.now() - t0;
+      return data;
+    } catch (e) {
+      stepDurations.set_proxy_first_attempt_failed = Date.now() - t0;
+      // Retry imediato se houver budget. 15s eh suficiente; se primeira passou validacao,
+      // segunda costuma fechar em 2-5s.
+      if (remaining() >= 18000) {
+        const t1 = Date.now();
+        try {
+          const data = await doCall(15000);
+          stepDurations.set_proxy = (Date.now() - t0);
+          stepDurations.set_proxy_retry = Date.now() - t1;
+          return data;
+        } catch (e2) {
+          stepDurations.set_proxy = Date.now() - t0;
+          throw e2;
+        }
+      }
+      throw e;
+    }
   };
 
   // Verifica se o proxy foi persistido. Retorna true se sim.
   const verifyProxy = async (): Promise<boolean> => {
+    const t0 = Date.now();
     try {
       const res = await timedFetch(`${API_URL}/proxy/find/${name}`, { method: "GET", headers }, 5000);
       const data = await res.json();
+      stepDurations.verify_proxy = Date.now() - t0;
       return Boolean(data && typeof data === "object" && (data as { host?: string }).host);
     } catch {
+      stepDurations.verify_proxy = Date.now() - t0;
       return false;
     }
   };
 
   // GET /instance/connect — dispara Baileys (na primeira chamada) e/ou refaz o pairing code.
-  const fetchPairingCode = async (timeoutMs = 15000): Promise<{ pairingCode: string; code?: string; base64?: string } | null> => {
+  const fetchPairingCode = async (timeoutMs = 12000): Promise<{ pairingCode: string; code?: string; base64?: string } | null> => {
     try {
       const res = await timedFetch(`${API_URL}/instance/connect/${name}`, { method: "GET", headers }, timeoutMs);
       const data = (await res.json()) as { pairingCode?: string; code?: string; base64?: string };
@@ -104,9 +148,9 @@ export async function createInstance(name: string, number: string, manualProxy?:
     return null;
   };
 
-  // Poll a cada 1s por ate windowMs.
+  // Poll a cada 1s por ate windowMs, respeitando o budget total.
   const pollPairingCode = async (windowMs: number) => {
-    const deadline = Date.now() + windowMs;
+    const deadline = Math.min(Date.now() + windowMs, startedAt + TOTAL_BUDGET_MS - 2000);
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 1000));
       const got = await fetchPairingCode(5000);
@@ -126,6 +170,7 @@ export async function createInstance(name: string, number: string, manualProxy?:
     instance: { instanceName: name, status: "connecting" },
     qrcode: { pairingCode: pairing.pairingCode, code: pairing.code, base64: pairing.base64, count: 1 },
     _proxy_set: true,
+    _step_durations: { ...stepDurations },
     ...extras,
   });
 
@@ -156,19 +201,21 @@ export async function createInstance(name: string, number: string, manualProxy?:
     }
 
     // Baileys vai iniciar AGORA, ja com o proxy ativo. Primeira tentativa de pairing code.
-    const first = await fetchPairingCode(15000);
+    const first = await fetchPairingCode(12000);
     if (first) return { success: buildSuccess(first) };
 
-    // Se nao veio na primeira, pola por ate 6s.
-    const polled = await pollPairingCode(6000);
+    // Se nao veio na primeira, pola por ate 10s (limitado pelo budget restante).
+    const polled = await pollPairingCode(10000);
     if (polled) return { success: buildSuccess(polled, { _recovered_via_poll: true }) };
 
     return { error: "no_pairing_code_after_poll" };
   };
 
   // Faz refresh final do code para garantir validade maxima WhatsApp (~40s a partir de agora).
+  // So executa se houver budget; refresh e nice-to-have, nao critico.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const refreshFinal = async (success: Record<string, unknown>): Promise<any> => {
+    if (remaining() < 5000) return success;
     const fresh = await fetchPairingCode(5000);
     if (fresh) {
       return {
@@ -184,21 +231,37 @@ export async function createInstance(name: string, number: string, manualProxy?:
   const first = await runAttempt();
   if (first.success) return refreshFinal(first.success);
 
-  // Tentativa 2 (apos delete e backoff)
-  await tryDelete();
-  await new Promise((r) => setTimeout(r, 1500));
+  // Tentativa 2 so se houver budget suficiente (delete + backoff + outro flow completo).
+  // Pior caso de runAttempt: ~52s. So vale a pena retentar se sobrar pelo menos 30s.
+  if (remaining() >= 30000) {
+    await tryDelete();
+    await new Promise((r) => setTimeout(r, 1500));
 
-  const second = await runAttempt();
-  if (second.success) return refreshFinal({ ...second.success, _retried: true });
+    const second = await runAttempt();
+    if (second.success) return refreshFinal({ ...second.success, _retried: true });
 
-  // Tudo falhou — limpa e devolve resposta de diagnostico.
+    await tryDelete();
+    return {
+      instance: { instanceName: name, status: "failed" },
+      qrcode: { count: 0 },
+      _firstError: first.error || "unknown",
+      _secondError: second.error || "unknown",
+      _retried: true,
+      _step_durations: stepDurations,
+      _total_duration_ms: Date.now() - startedAt,
+    };
+  }
+
+  // Sem budget pra retry — devolve so o erro da primeira tentativa.
   await tryDelete();
   return {
     instance: { instanceName: name, status: "failed" },
     qrcode: { count: 0 },
     _firstError: first.error || "unknown",
-    _secondError: second.error || "unknown",
-    _retried: true,
+    _secondError: "skipped_no_budget",
+    _retried: false,
+    _step_durations: stepDurations,
+    _total_duration_ms: Date.now() - startedAt,
   };
 }
 

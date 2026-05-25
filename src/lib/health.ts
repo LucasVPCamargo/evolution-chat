@@ -142,6 +142,45 @@ export async function checkProxyForInstance(
   }
 }
 
+// Pre-check de proxy manual antes de gastar tempo no /proxy/set da Evolution.
+// 1 tentativa rapida (6s) + 1 retry (6s). Total <=12s. Confirma que o proxy responde
+// pela nossa rede; se aqui falhar, vai falhar tambem pra Evolution. Devolve detalhe
+// pra logar e mostrar erro especifico ao usuario.
+export async function preCheckManualProxy(proxy: {
+  host: string;
+  port: string;
+  username: string;
+  password: string;
+}): Promise<{ ok: true; ip: string; country: string; latencyMs: number } | { ok: false; reason: string; latencyMs: number }> {
+  const attempt = async (timeoutMs: number) => {
+    const start = Date.now();
+    try {
+      const { ProxyAgent } = await import("undici");
+      const proxyUrl = `http://${proxy.username}:${proxy.password}@${proxy.host}:${proxy.port}`;
+      const agent = new ProxyAgent(proxyUrl);
+      const res = await fetch("http://ip-api.com/json/?fields=status,country,countryCode,city,query", {
+        // @ts-expect-error dispatcher is valid in Node.js with undici
+        dispatcher: agent,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const data = await res.json();
+      const latencyMs = Date.now() - start;
+      if (data?.status === "success" && data?.query) {
+        return { ok: true as const, ip: data.query as string, country: (data.countryCode || "??") as string, latencyMs };
+      }
+      return { ok: false as const, reason: `ip-api status=${data?.status || "unknown"}`, latencyMs };
+    } catch (e) {
+      return { ok: false as const, reason: String(e).slice(0, 120), latencyMs: Date.now() - start };
+    }
+  };
+
+  const first = await attempt(6000);
+  if (first.ok) return first;
+  // Retry imediato — proxies residenciais sticky as vezes tem cold-start na sessao.
+  const second = await attempt(6000);
+  return second;
+}
+
 export async function runHealthChecks(): Promise<HealthResponse> {
   const results = await Promise.allSettled([
     checkEvolution(),

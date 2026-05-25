@@ -1,9 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createInstance, type ManualProxy } from "@/lib/evolution";
+import { preCheckManualProxy } from "@/lib/health";
 import { requireAuth } from "@/lib/auth";
 import { chipLog } from "@/lib/logger";
 
-export const maxDuration = 60;
+export const maxDuration = 90;
+
+// Traduz o codigo interno do _firstError em uma mensagem util pro usuario final.
+// O createInstance ja loga o detalhe cru; aqui so escolhemos o que aparece no toast.
+function userFacingError(detail: string | null | undefined, mode: "manual" | "auto"): string {
+  if (!detail) return "Falha ao gerar codigo de pareamento (motivo desconhecido)";
+  if (detail.startsWith("set_proxy_failed")) {
+    return mode === "manual"
+      ? "Proxy manual nao respondeu — confira host:porta:usuario:senha ou troque o IP"
+      : "Proxy IPRoyal demorou demais — tente novamente em 30s";
+  }
+  if (detail === "proxy_not_persisted_after_set") {
+    return "Evolution nao salvou o proxy — tente novamente";
+  }
+  if (detail === "no_pairing_code_after_poll") {
+    return "WhatsApp nao respondeu a tempo — pode ser rate-limit do numero (aguarde 10min) ou proxy lento";
+  }
+  if (detail.startsWith("create_failed")) {
+    return "Evolution API offline ou inalcancavel — verifique o pre-check";
+  }
+  if (detail.startsWith("create_unexpected_response")) {
+    return "Evolution retornou resposta inesperada — chip ja existe? tente outro nome";
+  }
+  return `Falha ao gerar codigo de pareamento (${detail.slice(0, 80)})`;
+}
 
 export async function POST(req: NextRequest) {
   const denied = await requireAuth();
@@ -40,9 +65,39 @@ export async function POST(req: NextRequest) {
       proxy_port: manualProxy?.port,
     });
 
-    // Cria a instancia ja com proxy inline. Sem isso, o Baileys abre o WS para o WhatsApp
-    // pelo IP do servidor antes do setup configurar o proxy — causa principal de bans em
-    // escala (10-20+ chips pareados pelo mesmo IP).
+    // PRE-CHECK do proxy manual antes de gastar tempo no Evolution. Se o proxy nao
+    // responder pela nossa rede, com certeza nao vai responder pra Evolution tambem.
+    // Falha rapida (<=12s) com mensagem clara em vez de gastar 25s na validacao
+    // interna do Evolution e devolver "set_proxy_failed".
+    if (manualProxy) {
+      const pc = await preCheckManualProxy(manualProxy);
+      if (!pc.ok) {
+        chipLog("error", "chip.connect.manual_proxy_unreachable", name, {
+          duration_ms: Date.now() - start,
+          proxy_host: manualProxy.host,
+          proxy_port: manualProxy.port,
+          reason: pc.reason,
+          probe_ms: pc.latencyMs,
+        });
+        return NextResponse.json(
+          {
+            error: "Proxy manual nao respondeu — confira host:porta:usuario:senha ou pegue um IP novo no checker.marketbet.com.br",
+            diagnostic: { stage: "pre_check_manual_proxy", reason: pc.reason, probe_ms: pc.latencyMs },
+          },
+          { status: 502 }
+        );
+      }
+      chipLog("info", "chip.connect.manual_proxy_precheck_ok", name, {
+        proxy_host: manualProxy.host,
+        proxy_ip: pc.ip,
+        proxy_country: pc.country,
+        probe_ms: pc.latencyMs,
+      });
+    }
+
+    // Cria a instancia, configura proxy, dispara Baileys, devolve pairing code.
+    // Evolution 2.3.7 ignora `proxy` inline em /instance/create — fluxo correto eh
+    // create -> /proxy/set -> /proxy/find -> /instance/connect.
     const instance = await createInstance(name, number, manualProxy);
     const pairingCode = instance?.qrcode?.pairingCode || null;
 
@@ -61,6 +116,9 @@ export async function POST(req: NextRequest) {
         second_error: instance?._secondError ?? null,
         retried: instance?._retried ?? false,
         recovered_via_poll: instance?._recovered_via_poll ?? false,
+        step_durations: instance?._step_durations ?? null,
+        total_duration_ms: instance?._total_duration_ms ?? null,
+        proxy_mode: manualProxy ? "manual" : "auto",
         instance_status: instance?.instance?.status,
         instance_response_keys: instance && typeof instance === "object" ? Object.keys(instance).slice(0, 20) : null,
         instance_error_message: instance?.message ?? instance?.error ?? instance?.response?.message ?? null,
@@ -68,7 +126,14 @@ export async function POST(req: NextRequest) {
         instance_response: JSON.stringify(safeInstance).slice(0, 1500),
       });
       return NextResponse.json(
-        { error: "Falha ao gerar codigo de pareamento", instance },
+        {
+          error: userFacingError(instance?._firstError, manualProxy ? "manual" : "auto"),
+          diagnostic: {
+            first_error: instance?._firstError ?? null,
+            second_error: instance?._secondError ?? null,
+            step_durations: instance?._step_durations ?? null,
+          },
+        },
         { status: 500 }
       );
     }
@@ -78,6 +143,8 @@ export async function POST(req: NextRequest) {
       proxy_mode: manualProxy ? "manual" : "auto",
       recovered_via_poll: instance?._recovered_via_poll ?? false,
       retried: instance?._retried ?? false,
+      refreshed: instance?._refreshed ?? false,
+      step_durations: instance?._step_durations ?? null,
     });
 
     return NextResponse.json({ pairingCode });
