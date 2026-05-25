@@ -160,6 +160,15 @@ export default function Dashboard() {
   const connecting = chips.filter((c) => c.connectionStatus === "connecting").length;
   const offline = chips.filter((c) => c.connectionStatus !== "open" && c.connectionStatus !== "connecting").length;
 
+  // Ordena chips: Online primeiro, Connecting depois, Close por ultimo.
+  // Dentro de cada grupo, ordem alfabetica por nome — facilita achar.
+  const statusRank = (s: string) => (s === "open" ? 0 : s === "connecting" ? 1 : 2);
+  const sortedChips = [...chips].sort((a, b) => {
+    const r = statusRank(a.connectionStatus) - statusRank(b.connectionStatus);
+    if (r !== 0) return r;
+    return a.name.localeCompare(b.name);
+  });
+
   return (
     <main className="mx-auto max-w-6xl px-6 py-8">
       {/* Header */}
@@ -232,7 +241,7 @@ export default function Dashboard() {
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {chips.map((chip) => (
+          {sortedChips.map((chip) => (
             <ChipCard
               key={chip.name}
               name={chip.name}
