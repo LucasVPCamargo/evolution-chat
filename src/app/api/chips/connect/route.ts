@@ -100,8 +100,11 @@ export async function POST(req: NextRequest) {
     // create -> /proxy/set -> /proxy/find -> /instance/connect.
     const instance = await createInstance(name, number, manualProxy);
     const pairingCode = instance?.qrcode?.pairingCode || null;
+    const qrBase64Early = instance?.qrcode?.base64 || null;
 
-    if (!pairingCode) {
+    // Sucesso se temos pairing code (preferido) OU base64 QR (fallback). So entra no path
+    // de erro se nao temos nenhum dos dois.
+    if (!pairingCode && !qrBase64Early) {
       // Loga o response cru da Evolution (sem secrets) para diagnosticar o que veio no lugar do pairing code.
       const safeInstance = instance ? { ...instance } : null;
       if (safeInstance && typeof safeInstance === "object") {
@@ -118,6 +121,7 @@ export async function POST(req: NextRequest) {
         recovered_via_poll: instance?._recovered_via_poll ?? false,
         step_durations: instance?._step_durations ?? null,
         total_duration_ms: instance?._total_duration_ms ?? null,
+        last_connect_raw: instance?._last_connect_raw ?? null,
         proxy_mode: manualProxy ? "manual" : "auto",
         instance_status: instance?.instance?.status,
         instance_response_keys: instance && typeof instance === "object" ? Object.keys(instance).slice(0, 20) : null,
@@ -132,11 +136,15 @@ export async function POST(req: NextRequest) {
             first_error: instance?._firstError ?? null,
             second_error: instance?._secondError ?? null,
             step_durations: instance?._step_durations ?? null,
+            last_connect_raw: instance?._last_connect_raw ?? null,
           },
         },
         { status: 500 }
       );
     }
+
+    const qrBase64: string | null = instance?.qrcode?.base64 ?? null;
+    const viaQrFallback: boolean = Boolean(instance?._via_qr_fallback);
 
     chipLog("info", "chip.connect.pairing_code_issued", name, {
       duration_ms: Date.now() - start,
@@ -145,9 +153,10 @@ export async function POST(req: NextRequest) {
       retried: instance?._retried ?? false,
       refreshed: instance?._refreshed ?? false,
       step_durations: instance?._step_durations ?? null,
+      via_qr_fallback: viaQrFallback,
     });
 
-    return NextResponse.json({ pairingCode });
+    return NextResponse.json({ pairingCode, qrBase64, viaQrFallback });
   } catch (error) {
     chipLog("error", "chip.connect.failed", chipName, {
       duration_ms: Date.now() - start,

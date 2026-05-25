@@ -31,6 +31,7 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
   const [number, setNumber] = useState("");
   const [loading, setLoading] = useState(false);
   const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [qrBase64, setQrBase64] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState("");
@@ -109,6 +110,10 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
 
       if (data.pairingCode) {
         setPairingCode(data.pairingCode);
+        setQrBase64(data.qrBase64 ?? null);
+      } else if (data.qrBase64) {
+        // Evolution caiu no fallback de QR code — funciona pra pareamento via "Conectar dispositivo".
+        setQrBase64(data.qrBase64);
       } else {
         setError("Nao foi possivel gerar o codigo de pareamento");
       }
@@ -176,7 +181,7 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
       <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-900 p-6">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-semibold text-white">
-            {pairingCode ? "Codigo de Pareamento" : "Conectar Novo Chip"}
+            {pairingCode ? "Codigo de Pareamento" : qrBase64 ? "Escaneie o QR Code" : "Conectar Novo Chip"}
           </h2>
           <button
             onClick={handleCloseModal}
@@ -186,7 +191,7 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
           </button>
         </div>
 
-        {!pairingCode ? (
+        {!pairingCode && !qrBase64 ? (
           <div className="mt-5 space-y-4">
             {/* Pre-check status */}
             <div className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
@@ -373,30 +378,50 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
                   : `Proxy manual: ${manualProxyStr.split(":").slice(0, 2).join(":")}`}
               </p>
             </div>
-            <p className="text-sm text-zinc-400">
-              Digite este codigo no WhatsApp do celular:
-            </p>
-            <div className="flex items-center justify-between rounded-lg border border-emerald-500/30 bg-emerald-950/30 px-4 py-3">
-              <span className="font-mono text-2xl font-bold tracking-widest text-emerald-400">
-                {pairingCode}
-              </span>
-              <button
-                onClick={handleCopy}
-                className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800"
-              >
-                {copied ? (
-                  <Check className="h-5 w-5 text-emerald-400" />
-                ) : (
-                  <Copy className="h-5 w-5" />
-                )}
-              </button>
-            </div>
-            <p className="text-xs text-zinc-500">
-              No celular: WhatsApp &gt; Dispositivos conectados &gt; Conectar dispositivo &gt; Conectar com numero de telefone
-            </p>
-            <p className="text-xs text-amber-400">
-              Voce tem 40 segundos para usar o codigo antes de expirar
-            </p>
+            {pairingCode ? (
+              <>
+                <p className="text-sm text-zinc-400">
+                  Digite este codigo no WhatsApp do celular:
+                </p>
+                <div className="flex items-center justify-between rounded-lg border border-emerald-500/30 bg-emerald-950/30 px-4 py-3">
+                  <span className="font-mono text-2xl font-bold tracking-widest text-emerald-400">
+                    {pairingCode}
+                  </span>
+                  <button
+                    onClick={handleCopy}
+                    className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800"
+                  >
+                    {copied ? (
+                      <Check className="h-5 w-5 text-emerald-400" />
+                    ) : (
+                      <Copy className="h-5 w-5" />
+                    )}
+                  </button>
+                </div>
+                <p className="text-xs text-zinc-500">
+                  No celular: WhatsApp &gt; Dispositivos conectados &gt; Conectar dispositivo &gt; Conectar com numero de telefone
+                </p>
+                <p className="text-xs text-amber-400">
+                  Voce tem 40 segundos para usar o codigo antes de expirar
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-zinc-400">
+                  Evolution nao gerou pairing code — use o QR como fallback. Escaneie no WhatsApp do celular:
+                </p>
+                <div className="flex items-center justify-center rounded-lg border border-emerald-500/30 bg-white p-3">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={qrBase64!} alt="QR code de pareamento" className="h-56 w-56" />
+                </div>
+                <p className="text-xs text-zinc-500">
+                  No celular: WhatsApp &gt; Dispositivos conectados &gt; Conectar dispositivo &gt; Aponte a camera pro QR
+                </p>
+                <p className="text-xs text-amber-400">
+                  O QR tambem expira em ~40s; se nao conseguir, feche e tente reconectar
+                </p>
+              </>
+            )}
             <button
               onClick={handleDone}
               disabled={finishing}

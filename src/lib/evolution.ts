@@ -138,12 +138,24 @@ export async function createInstance(name: string, number: string, manualProxy?:
     }
   };
 
-  // GET /instance/connect — dispara Baileys (na primeira chamada) e/ou refaz o pairing code.
-  const fetchPairingCode = async (timeoutMs = 12000): Promise<{ pairingCode: string; code?: string; base64?: string } | null> => {
+  // Captura o raw response da ultima chamada /instance/connect quando nao vier
+  // pairing code, pra diagnosticar (vem base64 puro? vem vazio? veio erro?).
+  let lastConnectRaw: string | null = null;
+
+  // GET /instance/connect?number={number} — dispara Baileys (na primeira chamada) e/ou
+  // refaz o pairing code. O ?number= forca a Evolution a gerar pairing code mesmo quando
+  // estaria caindo no fallback de QR; sem ele, observamos Evolution devolvendo so base64.
+  // Aceitamos `pairingCode` (preferido) OU `base64` (QR como fallback usavel).
+  const fetchPairingCode = async (timeoutMs = 12000): Promise<{ pairingCode?: string; code?: string; base64?: string } | null> => {
     try {
-      const res = await timedFetch(`${API_URL}/instance/connect/${name}`, { method: "GET", headers }, timeoutMs);
-      const data = (await res.json()) as { pairingCode?: string; code?: string; base64?: string };
+      const url = `${API_URL}/instance/connect/${name}?number=${encodeURIComponent(number)}`;
+      const res = await timedFetch(url, { method: "GET", headers }, timeoutMs);
+      const raw = await res.text();
+      lastConnectRaw = raw.slice(0, 800);
+      let data: { pairingCode?: string; code?: string; base64?: string } = {};
+      try { data = JSON.parse(raw); } catch { /* nao-json */ }
       if (data?.pairingCode) return { pairingCode: data.pairingCode, code: data.code, base64: data.base64 };
+      if (data?.base64) return { base64: data.base64, code: data.code };
     } catch { /* ignore */ }
     return null;
   };
@@ -166,11 +178,17 @@ export async function createInstance(name: string, number: string, manualProxy?:
   };
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const buildSuccess = (pairing: { pairingCode: string; code?: string; base64?: string }, extras: Record<string, unknown> = {}): any => ({
+  const buildSuccess = (pairing: { pairingCode?: string; code?: string; base64?: string }, extras: Record<string, unknown> = {}): any => ({
     instance: { instanceName: name, status: "connecting" },
-    qrcode: { pairingCode: pairing.pairingCode, code: pairing.code, base64: pairing.base64, count: 1 },
+    qrcode: {
+      pairingCode: pairing.pairingCode,
+      code: pairing.code,
+      base64: pairing.base64,
+      count: 1,
+    },
     _proxy_set: true,
     _step_durations: { ...stepDurations },
+    _via_qr_fallback: !pairing.pairingCode && Boolean(pairing.base64),
     ...extras,
   });
 
@@ -249,6 +267,7 @@ export async function createInstance(name: string, number: string, manualProxy?:
       _retried: true,
       _step_durations: stepDurations,
       _total_duration_ms: Date.now() - startedAt,
+      _last_connect_raw: lastConnectRaw,
     };
   }
 
@@ -262,6 +281,7 @@ export async function createInstance(name: string, number: string, manualProxy?:
     _retried: false,
     _step_durations: stepDurations,
     _total_duration_ms: Date.now() - startedAt,
+    _last_connect_raw: lastConnectRaw,
   };
 }
 
