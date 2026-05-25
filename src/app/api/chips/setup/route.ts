@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { setChatwoot, setProxy, setSettings, type ManualProxy } from "@/lib/evolution";
+import { restartInstance, setChatwoot, setProxy, setSettings, type ManualProxy } from "@/lib/evolution";
 import { createInbox, addAllAgentsToInbox } from "@/lib/chatwoot";
 import { requireAuth } from "@/lib/auth";
 import { chipLog } from "@/lib/logger";
 
-export const maxDuration = 15;
+export const maxDuration = 20;
 
 // Tenta a tarefa e devolve { ok: true, value } ou { ok: false, error }. Sem mais .catch(() => null)
 // engolindo falhas silenciosamente — o cliente recebe o detalhe do que deu errado.
@@ -72,7 +72,20 @@ export async function POST(req: NextRequest) {
 
     const chatwootResult = await safe("chatwoot", () => setChatwoot(name));
 
-    const results = [proxyResult, inboxResult, settingsResult, agentsResult, chatwootResult].filter(
+    // RESTART pra forcar o Baileys a reconectar ja lendo o proxy persistido no DB.
+    // Sem isso, o WebSocket do pareamento inicial continua sendo usado por sessoes
+    // — vazando IP do servidor pro WhatsApp por minutos/horas. So vale rodar se
+    // o proxy realmente foi persistido (proxyResult.ok). Pequeno sleep pra deixar
+    // Baileys terminar de sincronizar a sessao recem-pareada antes do restart.
+    let restartResult: Awaited<ReturnType<typeof safe>> | null = null;
+    if (proxyResult.ok) {
+      await new Promise((r) => setTimeout(r, 1500));
+      restartResult = await safe("restart", () => restartInstance(name));
+    } else {
+      chipLog("warn", "chip.setup.restart_skipped", name, { reason: "proxy_not_set" });
+    }
+
+    const results = [proxyResult, inboxResult, settingsResult, agentsResult, chatwootResult, restartResult].filter(
       (r): r is NonNullable<typeof r> => r !== null,
     );
     const warnings = results.filter((r) => !r.ok).map((r) => ({ step: r.label, error: r.error }));
@@ -86,6 +99,7 @@ export async function POST(req: NextRequest) {
       duration_ms: Date.now() - start,
       status: warnings.length === 0 ? "ok" : "partial",
       warning_count: warnings.length,
+      proxy_applied_via_restart: proxyResult.ok && restartResult?.ok === true,
     });
 
     return NextResponse.json({
