@@ -128,6 +128,23 @@ function normalizeNumber(raw: string | undefined | null): string {
   return raw.replace(/\D/g, "").slice(-11);
 }
 
+// Resolve conversas que sao do maturador de chips (contato com "WMI" no nome).
+// O maturador envia mensagens entre chips pra simular trafego organico, mas isso
+// polui a inbox real de atendimento. Detecta pelo nome do contato — todos os
+// contatos do maturador tem padrao "Contato WMI XXXX", "WMI-YYYY-NNNN" ou similar.
+export async function resolveWmiConversations(inboxId: number): Promise<{ resolved: number; checked: number }> {
+  const convs = await listConversationsForInbox(inboxId, "open");
+  let resolved = 0;
+  for (const c of convs as Array<{ id: number; meta?: { sender?: { name?: string } } }>) {
+    const name = c.meta?.sender?.name || "";
+    if (/\bWMI\b/i.test(name)) {
+      const r = await resolveConversation(c.id);
+      if ("success" in r) resolved++;
+    }
+  }
+  return { resolved, checked: convs.length };
+}
+
 // Resolve conversas no inbox que pertencem ao proprio numero do chip (notificacao
 // "device linked" que aparece no Chatwoot logo apos pareamento). Faz ate `attempts`
 // tentativas espacadas, ja que a msg pode demorar alguns segundos pra chegar.

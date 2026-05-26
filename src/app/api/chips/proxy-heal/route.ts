@@ -16,6 +16,7 @@ import {
   deleteInbox,
   listInboxes,
   addAllAgentsToInbox,
+  resolveWmiConversations,
 } from "@/lib/chatwoot";
 
 // Roda a cada 30min via Vercel Cron + pode ser triggado manualmente da UI.
@@ -219,17 +220,49 @@ async function handle(req: NextRequest) {
     const inboxCleanup = {
       orphans_deleted: [] as string[],
       close_inboxes_deleted: [] as string[],
+      duplicates_deleted: [] as { chip: string; kept_id: number; deleted_ids: number[] }[],
       inboxes_recreated: [] as string[],
+      wmi_resolved: [] as { chip: string; resolved: number; checked: number }[],
       errors: [] as { name: string; step: string; error: string }[],
     };
 
     try {
       const inboxData = await listInboxes();
       const allInboxes = (inboxData.payload ?? inboxData ?? []) as Array<{ id: number; name: string }>;
-      const inboxMap = new Map<string, { id: number; name: string }>();
+      // Agrupa inboxes por chipName, pra detectar duplicatas (mesmo chip com varias inboxes)
+      const inboxesByChip = new Map<string, Array<{ id: number; name: string }>>();
       for (const inb of allInboxes) {
         const m = (inb.name || "").match(/^WhatsApp\s*-\s*(.+)$/);
-        if (m) inboxMap.set(m[1].trim(), inb);
+        if (!m) continue;
+        const chipName = m[1].trim();
+        if (!inboxesByChip.has(chipName)) inboxesByChip.set(chipName, []);
+        inboxesByChip.get(chipName)!.push(inb);
+      }
+
+      // Dedup: mantem inbox com maior id (mais nova) e deleta as outras
+      const inboxMap = new Map<string, { id: number; name: string }>();
+      for (const [chipName, list] of inboxesByChip) {
+        if (list.length === 1) {
+          inboxMap.set(chipName, list[0]);
+          continue;
+        }
+        // 2+ inboxes mesmo chip — keep newest (highest id)
+        list.sort((a, b) => b.id - a.id);
+        const kept = list[0];
+        const toDelete = list.slice(1);
+        const deletedIds: number[] = [];
+        for (const inb of toDelete) {
+          try {
+            await deleteInbox(inb.id);
+            deletedIds.push(inb.id);
+          } catch (e) {
+            inboxCleanup.errors.push({ name: chipName, step: "delete_duplicate", error: String(e).slice(0, 100) });
+          }
+        }
+        if (deletedIds.length > 0) {
+          inboxCleanup.duplicates_deleted.push({ chip: chipName, kept_id: kept.id, deleted_ids: deletedIds });
+        }
+        inboxMap.set(chipName, kept);
       }
 
       const chipsByName = new Map<string, Record<string, unknown>>();
@@ -286,8 +319,21 @@ async function handle(req: NextRequest) {
           // Re-habilita Chatwoot integration na Evolution apontando pra nova inbox
           await setChatwoot(chipName, true);
           inboxCleanup.inboxes_recreated.push(chipName);
+          inboxMap.set(chipName, { id: inboxId, name: `WhatsApp - ${chipName}` });
         } catch (e) {
           inboxCleanup.errors.push({ name: chipName, step: "recreate_inbox", error: String(e).slice(0, 100) });
+        }
+      }
+
+      // 4. Resolve conversas WMI (maturador de chips) em cada inbox ativo
+      for (const [chipName, inb] of inboxMap) {
+        try {
+          const res = await resolveWmiConversations(inb.id);
+          if (res.resolved > 0) {
+            inboxCleanup.wmi_resolved.push({ chip: chipName, resolved: res.resolved, checked: res.checked });
+          }
+        } catch (e) {
+          inboxCleanup.errors.push({ name: chipName, step: "wmi_resolve", error: String(e).slice(0, 100) });
         }
       }
     } catch (e) {
