@@ -132,6 +132,11 @@ export async function setSettings(name: string) {
 }
 
 export async function setChatwoot(name: string, enabled = true) {
+  // autoCreate: SEMPRE false. Quando Evolution cria inbox sozinho, usa URL interna
+  // errada (http://evolution-api:8080) que chatwoot-rails NAO RESOLVE (containers
+  // em network Docker separada). Nosso createInbox em chatwoot.ts cria com URL
+  // correta (EVOLUTION_WEBHOOK_BASE = IP externo). setChatwoot so configura a
+  // integration Evolution -> Chatwoot, nao precisa criar inbox.
   const res = await timedFetch(`${API_URL}/chatwoot/set/${name}`, {
     method: "POST",
     headers,
@@ -147,7 +152,7 @@ export async function setChatwoot(name: string, enabled = true) {
       importContacts: false,
       importMessages: false,
       daysLimitImportMessages: 0,
-      autoCreate: enabled,
+      autoCreate: false,
       organization: "Atendimento",
       logo: "",
     }),
