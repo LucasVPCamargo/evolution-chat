@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/chips/proxy-heal",
-      "schedule": "*/30 * * * *"
+      "schedule": "0 9 * * *"
     }
   ]
 }
