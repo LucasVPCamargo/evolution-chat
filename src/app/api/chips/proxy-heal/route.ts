@@ -6,10 +6,17 @@ import {
   setProxy,
   getConnectionState,
   restartInstance,
+  setChatwoot,
   type ManualProxy,
 } from "@/lib/evolution";
 import { checkProxyForInstance } from "@/lib/health";
 import { generateProxy } from "@/lib/marketbet";
+import {
+  createInbox,
+  deleteInbox,
+  listInboxes,
+  addAllAgentsToInbox,
+} from "@/lib/chatwoot";
 
 // Roda a cada 30min via Vercel Cron + pode ser triggado manualmente da UI.
 // Acoes:
@@ -202,6 +209,91 @@ async function handle(req: NextRequest) {
     const orphanHealed = results.filter((r) => r.status === "orphan_healed").length;
     const unreachable = results.filter((r) => r.status === "unreachable").length;
 
+    // ============================================================
+    // FASE 4: Cleanup de inboxes Chatwoot (Fase nova!)
+    // - Inbox de chip em close            -> disable integration + delete inbox
+    // - Inbox orfa (chip nao existe)       -> delete inbox
+    // - Chip online sem inbox              -> criar inbox + integrar Chatwoot
+    // Tudo idempotente, seguro pra rodar varias vezes.
+    // ============================================================
+    const inboxCleanup = {
+      orphans_deleted: [] as string[],
+      close_inboxes_deleted: [] as string[],
+      inboxes_recreated: [] as string[],
+      errors: [] as { name: string; step: string; error: string }[],
+    };
+
+    try {
+      const inboxData = await listInboxes();
+      const allInboxes = (inboxData.payload ?? inboxData ?? []) as Array<{ id: number; name: string }>;
+      const inboxMap = new Map<string, { id: number; name: string }>();
+      for (const inb of allInboxes) {
+        const m = (inb.name || "").match(/^WhatsApp\s*-\s*(.+)$/);
+        if (m) inboxMap.set(m[1].trim(), inb);
+      }
+
+      const chipsByName = new Map<string, Record<string, unknown>>();
+      for (const c of instances as Record<string, unknown>[]) {
+        chipsByName.set(c.name as string, c);
+      }
+
+      // 1. Delete orfa inboxes (chip nao existe na Evolution)
+      for (const [chipName, inb] of inboxMap) {
+        if (!chipsByName.has(chipName)) {
+          try {
+            await deleteInbox(inb.id);
+            inboxCleanup.orphans_deleted.push(chipName);
+            inboxMap.delete(chipName);
+          } catch (e) {
+            inboxCleanup.errors.push({ name: chipName, step: "delete_orphan", error: String(e).slice(0, 100) });
+          }
+        }
+      }
+
+      // 2. Delete inboxes de chips em close (com disable integration antes)
+      for (const [chipName, chip] of chipsByName) {
+        if (chip.connectionStatus !== "close") continue;
+        const inb = inboxMap.get(chipName);
+        if (!inb) continue;
+        try {
+          // Disable integration primeiro pra Evolution parar de postar
+          await setChatwoot(chipName, false);
+        } catch (e) {
+          inboxCleanup.errors.push({ name: chipName, step: "disable_chatwoot", error: String(e).slice(0, 100) });
+        }
+        try {
+          await deleteInbox(inb.id);
+          inboxCleanup.close_inboxes_deleted.push(chipName);
+          inboxMap.delete(chipName);
+        } catch (e) {
+          inboxCleanup.errors.push({ name: chipName, step: "delete_close_inbox", error: String(e).slice(0, 100) });
+        }
+      }
+
+      // 3. Chips online sem inbox -> recriar
+      for (const chip of onlineChips) {
+        const chipName = chip.name as string;
+        if (inboxMap.has(chipName)) continue;
+        try {
+          const inboxResult = await createInbox(chipName);
+          const inboxId = (inboxResult as { id?: number })?.id;
+          if (!inboxId) {
+            inboxCleanup.errors.push({ name: chipName, step: "create_inbox", error: "no id returned" });
+            continue;
+          }
+          // Adiciona todos agentes
+          try { await addAllAgentsToInbox(inboxId); } catch { /* nao critico */ }
+          // Re-habilita Chatwoot integration na Evolution apontando pra nova inbox
+          await setChatwoot(chipName, true);
+          inboxCleanup.inboxes_recreated.push(chipName);
+        } catch (e) {
+          inboxCleanup.errors.push({ name: chipName, step: "recreate_inbox", error: String(e).slice(0, 100) });
+        }
+      }
+    } catch (e) {
+      inboxCleanup.errors.push({ name: "_general", step: "inbox_cleanup", error: String(e).slice(0, 200) });
+    }
+
     return NextResponse.json({
       timestamp: new Date().toISOString(),
       total: instances.length,
@@ -214,6 +306,7 @@ async function handle(req: NextRequest) {
       stale_detected: staleChips,
       restarted: restartedChips,
       marketbet_configured: !!marketbet,
+      inbox_cleanup: inboxCleanup,
       results,
     });
   } catch (error) {
