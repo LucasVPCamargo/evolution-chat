@@ -1,0 +1,57 @@
+name: Proxy Heal
+
+# Dispara o endpoint /api/chips/proxy-heal a cada 30min.
+# GitHub Actions free tier comporta ~1440 runs/mes (30min * 24h * 30d = 1440).
+# Cada run dura ~30-60s = ~720-1440min/mes (bem dentro dos 2000min free).
+#
+# Vercel Hobby plan nao suporta cron sub-daily, por isso usamos GH Actions.
+# Pra trigger manual: tab Actions > Proxy Heal > "Run workflow".
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  heal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Call proxy-heal endpoint
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          ENDPOINT: https://evolution-chat.vercel.app/api/chips/proxy-heal
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "::error::CRON_SECRET nao configurado. Vai em Settings > Secrets > Actions > New secret"
+            exit 1
+          fi
+
+          response=$(curl -s -w "\nHTTP_CODE:%{http_code}\nTIME:%{time_total}" \
+            -X GET \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            --max-time 90 \
+            "$ENDPOINT")
+
+          http_code=$(echo "$response" | grep -oP 'HTTP_CODE:\K[0-9]+')
+          time_total=$(echo "$response" | grep -oP 'TIME:\K[0-9.]+')
+          body=$(echo "$response" | sed -E '/^(HTTP_CODE|TIME):/d')
+
+          echo "Duration: ${time_total}s"
+          echo "HTTP status: $http_code"
+          echo "Response body:"
+          echo "$body" | jq . 2>/dev/null || echo "$body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "::error::Heal endpoint returned HTTP $http_code"
+            exit 1
+          fi
+
+          # Summary no log
+          if echo "$body" | jq -e . >/dev/null 2>&1; then
+            healthy=$(echo "$body" | jq -r '.healthy // 0')
+            healed=$(echo "$body" | jq -r '.healed // 0')
+            orphan=$(echo "$body" | jq -r '.orphan_healed // 0')
+            unreachable=$(echo "$body" | jq -r '.unreachable // 0')
+            echo "::notice::healthy=$healthy healed=$healed orphan_healed=$orphan unreachable=$unreachable"
+          fi
