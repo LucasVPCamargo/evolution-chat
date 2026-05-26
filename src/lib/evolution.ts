@@ -84,23 +84,28 @@ export interface ManualProxy {
 }
 
 export async function setProxy(name: string, manual?: ManualProxy) {
-  const body = manual
-    ? {
-        enabled: true,
-        host: manual.host,
-        port: manual.port,
-        protocol: manual.protocol || "http",
-        username: manual.username,
-        password: manual.password,
-      }
-    : {
-        enabled: true,
-        host: process.env.PROXY_HOST!,
-        port: process.env.PROXY_PORT!,
-        protocol: process.env.PROXY_PROTOCOL || "http",
-        username: process.env.PROXY_USERNAME!,
-        password: `${process.env.PROXY_PASSWORD!}_country-br_session-${name}-${Date.now()}`,
-      };
+  if (!manual) {
+    // Fallback proxy compartilhado marketbet quando manual nao foi passado.
+    // Usado raramente — auto-heal/connect normalmente passa proxy fresh via API
+    // marketbet (lib/marketbet.ts). Sem manual e sem MARKETBET_PROXY_*, eh erro.
+    const host = process.env.MARKETBET_PROXY_HOST;
+    const port = process.env.MARKETBET_PROXY_PORT;
+    const username = process.env.MARKETBET_PROXY_USERNAME;
+    const password = process.env.MARKETBET_PROXY_PASSWORD;
+    if (!host || !port || !username || !password) {
+      throw new Error("setProxy: nem manual nem MARKETBET_PROXY_* configurado");
+    }
+    manual = { host, port, username, password, protocol: "http" };
+  }
+
+  const body = {
+    enabled: true,
+    host: manual.host,
+    port: manual.port,
+    protocol: manual.protocol || "http",
+    username: manual.username,
+    password: manual.password,
+  };
 
   const res = await timedFetch(`${API_URL}/proxy/set/${name}`, {
     method: "POST",

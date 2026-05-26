@@ -68,11 +68,25 @@ export async function checkChatwoot(): Promise<ServiceHealth> {
   }
 }
 
+// Health check do proxy: testa o marketbet padrao (MARKETBET_PROXY_*) fazendo
+// uma request via undici ProxyAgent e validando que o exit IP eh BR.
 export async function checkProxy(): Promise<ServiceHealth> {
   const start = Date.now();
+  const host = process.env.MARKETBET_PROXY_HOST;
+  const port = process.env.MARKETBET_PROXY_PORT;
+  const username = process.env.MARKETBET_PROXY_USERNAME;
+  const password = process.env.MARKETBET_PROXY_PASSWORD;
+  if (!host || !port || !username || !password) {
+    return {
+      service: "proxy",
+      ok: false,
+      latencyMs: Date.now() - start,
+      detail: "MARKETBET_PROXY_* nao configurado",
+    };
+  }
   try {
     const { ProxyAgent } = await import("undici");
-    const proxyUrl = `http://${process.env.PROXY_USERNAME}:${process.env.PROXY_PASSWORD}_country-br_session-healthcheck@${process.env.PROXY_HOST}:${process.env.PROXY_PORT}`;
+    const proxyUrl = `http://${username}:${password}@${host}:${port}`;
     const agent = new ProxyAgent(proxyUrl);
 
     const res = await fetch("http://ip-api.com/json/?fields=status,country,countryCode,city,query", {
@@ -118,10 +132,16 @@ export async function checkProxyForInstance(
 ): Promise<{ ip: string; country: string; city: string; latencyMs: number } | null> {
   try {
     const { ProxyAgent } = await import("undici");
-    const host = proxyConfig?.host || process.env.PROXY_HOST!;
-    const port = proxyConfig?.port || process.env.PROXY_PORT!;
-    const username = proxyConfig?.username || process.env.PROXY_USERNAME!;
-    const password = proxyConfig?.password || `${process.env.PROXY_PASSWORD!}_country-br_session-${instanceName}`;
+    // Fallback: marketbet env (em vez de IPRoyal que foi removido).
+    const host = proxyConfig?.host || process.env.MARKETBET_PROXY_HOST;
+    const port = proxyConfig?.port || process.env.MARKETBET_PROXY_PORT;
+    const username = proxyConfig?.username || process.env.MARKETBET_PROXY_USERNAME;
+    const password = proxyConfig?.password || process.env.MARKETBET_PROXY_PASSWORD;
+    if (!host || !port || !username || !password) {
+      // Sem proxy disponivel — instance pode estar sem proxy configurado.
+      void instanceName;
+      return null;
+    }
     const proxyUrl = `http://${username}:${password}@${host}:${port}`;
     const agent = new ProxyAgent(proxyUrl);
     const start = Date.now();
