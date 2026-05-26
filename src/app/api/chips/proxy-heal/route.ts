@@ -9,6 +9,7 @@ import {
   type ManualProxy,
 } from "@/lib/evolution";
 import { checkProxyForInstance } from "@/lib/health";
+import { generateProxy } from "@/lib/marketbet";
 
 // Roda a cada 30min via Vercel Cron + pode ser triggado manualmente da UI.
 // Acoes:
@@ -58,14 +59,27 @@ async function mapBatched<T, R>(items: T[], limit: number, fn: (item: T) => Prom
   return out;
 }
 
-async function healOrphan(name: string, marketbet: ManualProxy | null): Promise<HealResult> {
-  // Aplica proxy default (marketbet se env setado, IPRoyal senao).
+async function healOrphan(name: string, marketbetEnv: ManualProxy | null): Promise<HealResult> {
   try {
-    if (marketbet) {
-      await setProxy(name, marketbet);
-    } else {
-      await setProxy(name); // IPRoyal fallback
+    // Preferencia: API marketbet (proxy dedicado fresh). Fallback: env hardcoded.
+    let proxy: ManualProxy;
+    try {
+      const fresh = await generateProxy({ tipo: "fixo", country: "br" });
+      proxy = {
+        host: fresh.host,
+        port: fresh.port,
+        username: fresh.username,
+        password: fresh.password,
+        protocol: fresh.protocol,
+      };
+    } catch {
+      if (!marketbetEnv) {
+        return { name, status: "unreachable", detail: "marketbet API failed e nao tem env fallback" };
+      }
+      proxy = marketbetEnv;
     }
+
+    await setProxy(name, proxy);
     // Verifica que persistiu
     await new Promise((r) => setTimeout(r, 400));
     const conf = await findProxy(name);

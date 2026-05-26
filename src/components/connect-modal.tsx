@@ -12,6 +12,7 @@ import {
   MessageSquare,
   AlertTriangle,
   CheckCircle2,
+  RefreshCw,
 } from "lucide-react";
 
 interface ServiceHealth {
@@ -37,17 +38,17 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
   const [precheck, setPrecheck] = useState<"checking" | "ok" | "failed">("checking");
   const [services, setServices] = useState<ServiceHealth[]>([]);
   const [proxyMode, setProxyMode] = useState<"auto" | "manual">("auto");
-  // Pre-preenchido pro proxy marketbet que usamos default. Acelera conectar varios
-  // chips em sequencia — user so edita se for proxy diferente.
-  const [manualProxyStr, setManualProxyStr] = useState(
-    "74.81.81.81:823:14077f61e769c610ee72__cr.br:248b481519b58e7e",
-  );
+  // Inicializa vazio — ao montar, busca proxy fresh da API marketbet.
+  // Se a API falhar (e.g., quota/network), cai no proxy compartilhado padrao.
+  const [manualProxyStr, setManualProxyStr] = useState("");
+  const [fetchingProxy, setFetchingProxy] = useState(false);
 
   const NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
   const nameInvalid = name.length > 0 && !NAME_PATTERN.test(name);
 
   useEffect(() => {
     runPrecheck();
+    fetchFreshProxy();
   }, []);
 
   async function runPrecheck() {
@@ -60,6 +61,28 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
     } catch {
       setPrecheck("failed");
       setServices([]);
+    }
+  }
+
+  // Busca 1 proxy fresh da API marketbet ao abrir modal. Cada chip ganha proxy
+  // unico/dedicado em vez de todos compartilharem o mesmo host:port:cred.
+  async function fetchFreshProxy() {
+    setFetchingProxy(true);
+    try {
+      const res = await fetch("/api/marketbet/next-proxy");
+      if (res.ok) {
+        const p = await res.json();
+        if (p?.formatted) {
+          setManualProxyStr(p.formatted);
+          return;
+        }
+      }
+      // Fallback: proxy compartilhado conhecido se API falhar
+      setManualProxyStr("74.81.81.81:823:14077f61e769c610ee72__cr.br:248b481519b58e7e");
+    } catch {
+      setManualProxyStr("74.81.81.81:823:14077f61e769c610ee72__cr.br:248b481519b58e7e");
+    } finally {
+      setFetchingProxy(false);
     }
   }
 
@@ -311,15 +334,31 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
                 </p>
               ) : (
                 <div>
-                  <input
-                    type="text"
-                    placeholder="host:porta:usuario:senha"
-                    value={manualProxyStr}
-                    onChange={(e) => setManualProxyStr(e.target.value)}
-                    className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 font-mono text-sm text-white placeholder:text-zinc-500 focus:border-emerald-500 focus:outline-none"
-                  />
+                  <div className="relative">
+                    <input
+                      type="text"
+                      placeholder={fetchingProxy ? "Gerando proxy fresh..." : "host:porta:usuario:senha"}
+                      value={manualProxyStr}
+                      onChange={(e) => setManualProxyStr(e.target.value)}
+                      disabled={fetchingProxy}
+                      className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 pr-9 font-mono text-sm text-white placeholder:text-zinc-500 focus:border-emerald-500 focus:outline-none disabled:opacity-60"
+                    />
+                    {fetchingProxy && (
+                      <Loader2 className="absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-zinc-500" />
+                    )}
+                    {!fetchingProxy && (
+                      <button
+                        type="button"
+                        onClick={fetchFreshProxy}
+                        title="Gerar novo proxy fresh"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-zinc-400 hover:bg-zinc-700 hover:text-emerald-400"
+                      >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
                   <p className="mt-1 text-xs text-zinc-500">
-                    Formato: host:porta:usuario:senha
+                    Proxy dedicado da API marketbet — IP unico por chip. Clique no botao pra gerar outro.
                   </p>
                 </div>
               )}
