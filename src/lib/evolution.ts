@@ -131,12 +131,12 @@ export async function setSettings(name: string) {
   return res.json();
 }
 
-export async function setChatwoot(name: string) {
+export async function setChatwoot(name: string, enabled = true) {
   const res = await timedFetch(`${API_URL}/chatwoot/set/${name}`, {
     method: "POST",
     headers,
     body: JSON.stringify({
-      enabled: true,
+      enabled,
       accountId: process.env.CHATWOOT_ACCOUNT_ID!,
       token: process.env.CHATWOOT_API_TOKEN!,
       url: process.env.CHATWOOT_INTERNAL_URL!,
@@ -147,7 +147,7 @@ export async function setChatwoot(name: string) {
       importContacts: false,
       importMessages: false,
       daysLimitImportMessages: 0,
-      autoCreate: true,
+      autoCreate: enabled,
       organization: "Atendimento",
       logo: "",
     }),

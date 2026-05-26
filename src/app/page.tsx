@@ -148,11 +148,27 @@ export default function Dashboard() {
 
   async function handleDelete(name: string) {
     if (!confirm(`Remover ${name}? Esta acao nao pode ser desfeita.`)) return;
-    await fetch("/api/chips/disconnect", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
+    try {
+      const res = await fetch("/api/chips/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.ok === false) {
+        const stepSummary = data?.steps
+          ? Object.entries(data.steps)
+              .map(([k, v]) => {
+                const s = v as { ok: boolean; detail?: string };
+                return `${k}: ${s.ok ? "ok" : s.detail || "fail"}`;
+              })
+              .join("\n")
+          : "sem detalhes";
+        alert(`Falha ao remover ${name}.\n\n${stepSummary}\n\nTente novamente em alguns segundos.`);
+      }
+    } catch (e) {
+      alert(`Erro de rede ao remover ${name}: ${String(e).slice(0, 100)}`);
+    }
     loadChips();
   }
 
