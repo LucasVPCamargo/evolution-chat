@@ -39,6 +39,7 @@ export default function Dashboard() {
   const [health, setHealth] = useState<{ healthy: boolean; services: { service: string; ok: boolean; latencyMs: number; detail?: string; ip?: string; country?: string; city?: string }[]; timestamp: string } | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
   const [lastHeal, setLastHeal] = useState<{ healed: number; unreachable: number; timestamp: string } | null>(null);
+  const [zombies, setZombies] = useState<Set<string>>(new Set());
 
   const loadChips = useCallback(async () => {
     try {
@@ -50,6 +51,18 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
       setRefreshing(false);
+    }
+  }, []);
+
+  const loadZombies = useCallback(async () => {
+    try {
+      const res = await fetch("/api/chips/probe");
+      if (!res.ok) return;
+      const data = await res.json();
+      const list = (data.zombies ?? []) as Array<{ name: string }>;
+      setZombies(new Set(list.map((z) => z.name)));
+    } catch {
+      /* probe nao critico — falha silenciosa */
     }
   }, []);
 
@@ -93,8 +106,19 @@ export default function Dashboard() {
     // Auto-heal proxies a cada 5 minutos
     const healTimer = setTimeout(() => runProxyHeal(), 10000); // primeira vez 10s após load
     const healInterval = setInterval(runProxyHeal, 5 * 60 * 1000);
-    return () => { clearInterval(refresh); clearTimeout(healTimer); clearInterval(healInterval); };
-  }, [status, loadChips, loadHealth, runProxyHeal]);
+    // Zombie probe: detecta chips com sessao Baileys morta (UI open, WS interno
+    // morto). Probe leva 5-15s por chip, roda em paralelo. Primeiro check 15s
+    // apos load (dá tempo dos chips carregarem), depois a cada 3min.
+    const zombieTimer = setTimeout(loadZombies, 15000);
+    const zombieInterval = setInterval(loadZombies, 3 * 60 * 1000);
+    return () => {
+      clearInterval(refresh);
+      clearTimeout(healTimer);
+      clearInterval(healInterval);
+      clearTimeout(zombieTimer);
+      clearInterval(zombieInterval);
+    };
+  }, [status, loadChips, loadHealth, loadZombies, runProxyHeal]);
 
   if (status === "loading" || status === "unauthenticated") {
     return (
@@ -266,6 +290,7 @@ export default function Dashboard() {
               proxy={!!chip.Proxy?.enabled}
               proxyDetails={chip.proxyDetails}
               chatwoot={!!chip.Chatwoot?.enabled}
+              zombie={zombies.has(chip.name)}
               onRestart={handleRestart}
               onDelete={handleDelete}
               onReconnect={handleReconnect}

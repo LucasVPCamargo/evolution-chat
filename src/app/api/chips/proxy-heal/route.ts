@@ -7,6 +7,7 @@ import {
   getConnectionState,
   restartInstance,
   setChatwoot,
+  probeChipSession,
   type ManualProxy,
 } from "@/lib/evolution";
 import { checkProxyForInstance } from "@/lib/health";
@@ -340,6 +341,55 @@ async function handle(req: NextRequest) {
       inboxCleanup.errors.push({ name: "_general", step: "inbox_cleanup", error: String(e).slice(0, 200) });
     }
 
+    // ============================================================
+    // FASE 5: Zombie detection — chip reportado open mas sessao Baileys morta.
+    // Acontece quando proxy residencial dropa por alguns segundos: Baileys perde
+    // sync de keys, WS continua up por minutos retornando erro, depois cai. UI
+    // mostra "open" o tempo todo. Sintoma: enviar msg pelo Chatwoot da "Connection
+    // Closed". Probe forca Baileys a fazer query — falhou = zombie.
+    // Recovery: tenta restart (raramente funciona) + sinaliza pra Reset manual.
+    // ============================================================
+    const zombieDetection = {
+      probed: 0,
+      zombies: [] as Array<{
+        name: string;
+        reason: string;
+        restartAttempted: boolean;
+        recovered: boolean;
+        needsReset: boolean;
+      }>,
+    };
+
+    const probeTargets = results
+      .filter((r) => r.status === "healthy" || r.status === "healed" || r.status === "orphan_healed")
+      .map((r) => r.name);
+
+    await mapBatched(probeTargets, STATE_CHECK_CONCURRENCY, async (name) => {
+      const probe = await probeChipSession(name);
+      zombieDetection.probed++;
+      if (probe.alive) return;
+      // Sessao zombie detectada. Tenta restart como recovery primaria.
+      let recovered = false;
+      let restartAttempted = false;
+      try {
+        await restartInstance(name);
+        restartAttempted = true;
+        // Espera Baileys reconectar antes de re-probar
+        await new Promise((r) => setTimeout(r, 8000));
+        const reprobe = await probeChipSession(name);
+        recovered = reprobe.alive;
+      } catch {
+        /* restart falhou — segue como zombie */
+      }
+      zombieDetection.zombies.push({
+        name,
+        reason: probe.reason,
+        restartAttempted,
+        recovered,
+        needsReset: !recovered,
+      });
+    });
+
     return NextResponse.json({
       timestamp: new Date().toISOString(),
       total: instances.length,
@@ -353,6 +403,7 @@ async function handle(req: NextRequest) {
       restarted: restartedChips,
       marketbet_configured: !!marketbet,
       inbox_cleanup: inboxCleanup,
+      zombie_detection: zombieDetection,
       results,
     });
   } catch (error) {

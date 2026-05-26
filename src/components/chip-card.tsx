@@ -11,6 +11,7 @@ import {
   Link,
   Globe,
   Loader2,
+  AlertTriangle,
 } from "lucide-react";
 
 export interface ProxyDetails {
@@ -36,6 +37,7 @@ interface ChipCardProps {
   proxy: boolean;
   proxyDetails: ProxyDetails | null;
   chatwoot: boolean;
+  zombie?: boolean;
   onRestart: (name: string) => void;
   onDelete: (name: string) => void;
   onReconnect: (name: string) => void;
@@ -48,6 +50,7 @@ export function ChipCard({
   proxy,
   proxyDetails,
   chatwoot,
+  zombie = false,
   onRestart,
   onDelete,
   onReconnect,
@@ -84,11 +87,13 @@ export function ChipCard({
   return (
     <div
       className={`group rounded-xl border p-5 transition-all ${
-        isOnline
-          ? "border-emerald-500/15 bg-zinc-900/80"
-          : isConnecting
-            ? "border-amber-500/15 bg-zinc-900/80"
-            : "border-red-500/15 bg-zinc-900/80"
+        zombie && isOnline
+          ? "border-red-500/40 bg-zinc-900/80 ring-1 ring-red-500/20"
+          : isOnline
+            ? "border-emerald-500/15 bg-zinc-900/80"
+            : isConnecting
+              ? "border-amber-500/15 bg-zinc-900/80"
+              : "border-red-500/15 bg-zinc-900/80"
       }`}
     >
       <div className="flex items-start justify-between">
@@ -111,16 +116,30 @@ export function ChipCard({
         </div>
         <span
           className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
-            isOnline
-              ? "bg-emerald-500/15 text-emerald-400"
-              : isConnecting
-                ? "bg-amber-500/15 text-amber-400"
-                : "bg-red-500/15 text-red-400"
+            zombie && isOnline
+              ? "bg-red-500/15 text-red-400"
+              : isOnline
+                ? "bg-emerald-500/15 text-emerald-400"
+                : isConnecting
+                  ? "bg-amber-500/15 text-amber-400"
+                  : "bg-red-500/15 text-red-400"
           }`}
         >
-          {isOnline ? "Online" : isConnecting ? "Conectando..." : status || "Offline"}
+          {zombie && isOnline ? "Zombie" : isOnline ? "Online" : isConnecting ? "Conectando..." : status || "Offline"}
         </span>
       </div>
+
+      {zombie && isOnline && (
+        <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-950/30 px-3 py-2 text-xs">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400" />
+          <div className="flex-1">
+            <p className="font-medium text-red-400">Sessao Baileys morta</p>
+            <p className="mt-0.5 text-red-400/70">
+              Chip aparece online mas nao envia mensagens. Auto-restart ja tentou. Clica em <span className="font-semibold">Reconectar</span> pra parear de novo.
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="mt-4 flex items-center gap-4 text-xs">
         <div className="flex items-center gap-1.5">
@@ -179,7 +198,7 @@ export function ChipCard({
       )}
 
       <div className="mt-4 flex gap-2">
-        {isClosed && (
+        {(isClosed || zombie) && (
           <button
             onClick={() => onReconnect(name)}
             className="flex items-center gap-1.5 rounded-lg bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-400 transition-colors hover:bg-emerald-500/25"

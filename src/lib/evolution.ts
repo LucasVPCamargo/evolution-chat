@@ -70,6 +70,45 @@ export async function restartInstance(name: string) {
   return res.json();
 }
 
+// Probe da sessao Baileys: usa /chat/whatsappNumbers (lookup leve, sem side effect)
+// pra forcar Baileys a fazer query. Se sessao esta zombie ("open" no UI mas WS
+// interno morto), retorna "Connection Closed" / "Timed Out" / 428. Detecta o
+// padrao do bug Evolution v2.3.7 onde chips ficam zombie depois de drop de proxy.
+export type ProbeResult =
+  | { alive: true }
+  | { alive: false; reason: "connection_closed" | "timeout" | "not_found" | "unknown"; detail?: string };
+
+export async function probeChipSession(name: string): Promise<ProbeResult> {
+  try {
+    const res = await timedFetch(
+      `${API_URL}/chat/whatsappNumbers/${name}`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ numbers: ["5511999999999"] }),
+      },
+      12000,
+    );
+    if (res.ok) return { alive: true };
+    if (res.status === 404) return { alive: false, reason: "not_found" };
+    const body = await res.text();
+    const lower = body.toLowerCase();
+    if (lower.includes("connection closed") || lower.includes("not connected") || lower.includes("precondition required")) {
+      return { alive: false, reason: "connection_closed", detail: body.slice(0, 150) };
+    }
+    if (lower.includes("timed out") || lower.includes("timeout") || lower.includes("request time-out")) {
+      return { alive: false, reason: "timeout", detail: body.slice(0, 150) };
+    }
+    return { alive: false, reason: "unknown", detail: body.slice(0, 150) };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes("AbortError") || msg.toLowerCase().includes("timeout")) {
+      return { alive: false, reason: "timeout", detail: msg.slice(0, 150) };
+    }
+    return { alive: false, reason: "unknown", detail: msg.slice(0, 150) };
+  }
+}
+
 export async function findProxy(name: string) {
   const res = await timedFetch(`${API_URL}/proxy/find/${name}`, { headers }, 5000);
   return res.json();
