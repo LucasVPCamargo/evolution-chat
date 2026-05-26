@@ -128,16 +128,33 @@ function normalizeNumber(raw: string | undefined | null): string {
   return raw.replace(/\D/g, "").slice(-11);
 }
 
-// Resolve conversas que sao do maturador de chips (contato com "WMI" no nome).
-// O maturador envia mensagens entre chips pra simular trafego organico, mas isso
-// polui a inbox real de atendimento. Detecta pelo nome do contato — todos os
-// contatos do maturador tem padrao "Contato WMI XXXX", "WMI-YYYY-NNNN" ou similar.
+// Remove caracteres invisiveis (zero-width spaces/joiners/marks) que o maturador
+// injeta entre letras pra evitar deteccao por regex simples (ex: "C​o‌dWMI").
+const INVISIBLE_RE = /[​-‏⁠-⁯﻿­]/g;
+function stripInvisible(s: string): string {
+  return s.replace(INVISIBLE_RE, "");
+}
+
+// Resolve conversas que sao do maturador de chips. Detecta por DOIS sinais:
+//   1) Nome do contato contem "WMI" (ex: "Contato WMI 28779", "WMI-260513-1187")
+//   2) Conteudo da ultima mensagem contem "CodWMI" (ex: "CodWMI0029s ...")
+// Em ambos os casos, strip de caracteres invisiveis antes de bater regex,
+// porque o maturador injeta zero-width chars entre letras pra evitar match.
 export async function resolveWmiConversations(inboxId: number): Promise<{ resolved: number; checked: number }> {
   const convs = await listConversationsForInbox(inboxId, "open");
   let resolved = 0;
-  for (const c of convs as Array<{ id: number; meta?: { sender?: { name?: string } } }>) {
-    const name = c.meta?.sender?.name || "";
-    if (/\bWMI\b/i.test(name)) {
+  for (const c of convs as Array<{
+    id: number;
+    meta?: { sender?: { name?: string } };
+    last_non_activity_message?: { content?: string };
+    messages?: Array<{ content?: string }>;
+  }>) {
+    const name = stripInvisible(c.meta?.sender?.name || "");
+    const lastMsgContent = stripInvisible(
+      c.last_non_activity_message?.content || c.messages?.[0]?.content || ""
+    );
+    const isWmi = /\bWMI\b/i.test(name) || /CodWMI/i.test(lastMsgContent);
+    if (isWmi) {
       const r = await resolveConversation(c.id);
       if ("success" in r) resolved++;
     }
