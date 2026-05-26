@@ -212,5 +212,10 @@ async function handle(req: NextRequest) {
 
 // POST pra trigger manual (NextAuth) ou cron (Bearer CRON_SECRET).
 // GET pra Vercel Cron (que usa GET por default).
-export const POST = handle;
-export const GET = handle;
+// Next.js exige function declarations nomeadas, n\xC3\xA3o alias via const.
+export async function POST(req: NextRequest) {
+  return handle(req);
+}
+export async function GET(req: NextRequest) {
+  return handle(req);
+}
