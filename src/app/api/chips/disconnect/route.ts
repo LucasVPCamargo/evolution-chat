@@ -62,33 +62,36 @@ export async function POST(req: NextRequest) {
     ]);
     steps.delete = deleteResult;
 
-    // 6. Verifica estado real
-    let stillExists = false;
-    try {
-      const list = await fetchInstances();
-      stillExists = Array.isArray(list) && list.some((i: { name: string }) => i.name === name);
-    } catch {
-      // Se nao conseguiu verificar, assume otimista
+    // 6. Se o delete falhou explicitamente (exception), tenta de novo
+    if (!steps.delete.ok) {
+      await new Promise((r) => setTimeout(r, 1500));
+      steps.delete_retry = await safeStep(() => deleteInstance(name));
     }
 
-    if (stillExists) {
-      // Ultima tentativa: forca delete sem ressonancia (se o disable+logout demoraram)
-      const retry = await safeStep(() => deleteInstance(name));
-      steps.delete_retry = retry;
-      try {
-        const list = await fetchInstances();
-        stillExists = Array.isArray(list) && list.some((i: { name: string }) => i.name === name);
-      } catch { /* ignore */ }
+    // 7. Verify "informativo" — fetchInstances pode ter cache curto, entao
+    // a fonte de verdade eh o resultado do delete em si. Verify so adiciona
+    // contexto util na resposta, NAO determina sucesso.
+    let stillVisible: boolean | null = null;
+    try {
+      // Pequeno wait extra pra cache propagar
+      await new Promise((r) => setTimeout(r, 1000));
+      const list = await fetchInstances();
+      stillVisible = Array.isArray(list) && list.some((i: { name: string }) => i.name === name);
+    } catch {
+      stillVisible = null;
     }
+
+    const deleteOk = steps.delete.ok === true || steps.delete_retry?.ok === true;
 
     return NextResponse.json(
       {
-        ok: !stillExists,
+        ok: deleteOk,
         name,
         inboxes_deleted: inboxesDeleted,
+        still_visible_after_delete: stillVisible, // informativo (cache?)
         steps,
       },
-      { status: stillExists ? 500 : 200 }
+      { status: deleteOk ? 200 : 500 }
     );
   } catch (error) {
     return NextResponse.json(
