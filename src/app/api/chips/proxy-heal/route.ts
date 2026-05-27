@@ -19,6 +19,7 @@ import {
   addAllAgentsToInbox,
   resolveWmiConversations,
 } from "@/lib/chatwoot";
+import { quarantineZombie, type QuarantineResult } from "@/lib/quarantine";
 
 // Roda a cada 30min via Vercel Cron + pode ser triggado manualmente da UI.
 // Acoes:
@@ -212,10 +213,76 @@ async function handle(req: NextRequest) {
     const unreachable = results.filter((r) => r.status === "unreachable").length;
 
     // ============================================================
-    // FASE 4: Cleanup de inboxes Chatwoot (Fase nova!)
+    // FASE 3: Zombie detection — chip reportado open mas sessao Baileys morta.
+    // Acontece quando proxy residencial dropa por alguns segundos: Baileys perde
+    // sync de keys, WS continua up por minutos retornando erro, depois cai. UI
+    // mostra "open" o tempo todo. Sintoma: enviar msg pelo Chatwoot da "Connection
+    // Closed". Probe forca Baileys a fazer query — falhou = zombie.
+    // Recovery: tenta restart (raramente funciona). Se nao recuperar, QUARENTENA
+    // (logout + disable chatwoot + delete inbox) pra evitar agentes mandando msg
+    // que falha silenciosamente. Chip aparece como Fechado no dashboard e some do
+    // Chatwoot — user precisa Reconectar via UI.
+    //
+    // RODA ANTES da Fase 4 pra que a recriacao de inbox da Fase 4.3 saiba
+    // ignorar chips que acabaram de ser quarentenados (caso comum: deep zombie
+    // onde Evolution se recusa a flippar pra `close`, mas inbox foi removido).
+    // ============================================================
+    const zombieDetection = {
+      probed: 0,
+      zombies: [] as Array<{
+        name: string;
+        reason: string;
+        restartAttempted: boolean;
+        recovered: boolean;
+        quarantined: boolean;
+        quarantine?: QuarantineResult["steps"];
+      }>,
+    };
+    const quarantinedNames = new Set<string>();
+
+    const probeTargets = results
+      .filter((r) => r.status === "healthy" || r.status === "healed" || r.status === "orphan_healed")
+      .map((r) => r.name);
+
+    await mapBatched(probeTargets, STATE_CHECK_CONCURRENCY, async (name) => {
+      const probe = await probeChipSession(name);
+      zombieDetection.probed++;
+      if (probe.alive) return;
+      // Sessao zombie detectada. Tenta restart como recovery primaria.
+      let recovered = false;
+      let restartAttempted = false;
+      try {
+        await restartInstance(name);
+        restartAttempted = true;
+        // Espera Baileys reconectar antes de re-probar
+        await new Promise((r) => setTimeout(r, 8000));
+        const reprobe = await probeChipSession(name);
+        recovered = reprobe.alive;
+      } catch {
+        /* restart falhou — segue como zombie */
+      }
+      let quarantineSteps: QuarantineResult["steps"] | undefined;
+      if (!recovered) {
+        const q = await quarantineZombie(name);
+        quarantineSteps = q.steps;
+        quarantinedNames.add(name);
+      }
+      zombieDetection.zombies.push({
+        name,
+        reason: probe.reason,
+        restartAttempted,
+        recovered,
+        quarantined: !recovered,
+        quarantine: quarantineSteps,
+      });
+    });
+
+    // ============================================================
+    // FASE 4: Cleanup de inboxes Chatwoot
     // - Inbox de chip em close            -> disable integration + delete inbox
     // - Inbox orfa (chip nao existe)       -> delete inbox
     // - Chip online sem inbox              -> criar inbox + integrar Chatwoot
+    //   EXCETO chips quarentenados na Fase 3 — esses ficam sem inbox de proposito
     // Tudo idempotente, seguro pra rodar varias vezes.
     // ============================================================
     const inboxCleanup = {
@@ -304,10 +371,16 @@ async function handle(req: NextRequest) {
         }
       }
 
-      // 3. Chips online sem inbox -> recriar
+      // 3. Chips online sem inbox -> recriar. Pula quarentenados (Fase 3):
+      //    eles aparecem como `open` no Evolution mas estao mortos, recriar
+      //    o inbox so geraria loop entre Fase 3 e Fase 4 em cada heal cycle.
       for (const chip of onlineChips) {
         const chipName = chip.name as string;
         if (inboxMap.has(chipName)) continue;
+        if (quarantinedNames.has(chipName)) {
+          inboxCleanup.errors.push({ name: chipName, step: "recreate_inbox", error: "skipped: quarantined zombie" });
+          continue;
+        }
         try {
           const inboxResult = await createInbox(chipName);
           const inboxId = (inboxResult as { id?: number })?.id;
@@ -340,55 +413,6 @@ async function handle(req: NextRequest) {
     } catch (e) {
       inboxCleanup.errors.push({ name: "_general", step: "inbox_cleanup", error: String(e).slice(0, 200) });
     }
-
-    // ============================================================
-    // FASE 5: Zombie detection — chip reportado open mas sessao Baileys morta.
-    // Acontece quando proxy residencial dropa por alguns segundos: Baileys perde
-    // sync de keys, WS continua up por minutos retornando erro, depois cai. UI
-    // mostra "open" o tempo todo. Sintoma: enviar msg pelo Chatwoot da "Connection
-    // Closed". Probe forca Baileys a fazer query — falhou = zombie.
-    // Recovery: tenta restart (raramente funciona) + sinaliza pra Reset manual.
-    // ============================================================
-    const zombieDetection = {
-      probed: 0,
-      zombies: [] as Array<{
-        name: string;
-        reason: string;
-        restartAttempted: boolean;
-        recovered: boolean;
-        needsReset: boolean;
-      }>,
-    };
-
-    const probeTargets = results
-      .filter((r) => r.status === "healthy" || r.status === "healed" || r.status === "orphan_healed")
-      .map((r) => r.name);
-
-    await mapBatched(probeTargets, STATE_CHECK_CONCURRENCY, async (name) => {
-      const probe = await probeChipSession(name);
-      zombieDetection.probed++;
-      if (probe.alive) return;
-      // Sessao zombie detectada. Tenta restart como recovery primaria.
-      let recovered = false;
-      let restartAttempted = false;
-      try {
-        await restartInstance(name);
-        restartAttempted = true;
-        // Espera Baileys reconectar antes de re-probar
-        await new Promise((r) => setTimeout(r, 8000));
-        const reprobe = await probeChipSession(name);
-        recovered = reprobe.alive;
-      } catch {
-        /* restart falhou — segue como zombie */
-      }
-      zombieDetection.zombies.push({
-        name,
-        reason: probe.reason,
-        restartAttempted,
-        recovered,
-        needsReset: !recovered,
-      });
-    });
 
     return NextResponse.json({
       timestamp: new Date().toISOString(),

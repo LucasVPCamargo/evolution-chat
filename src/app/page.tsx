@@ -87,13 +87,27 @@ export default function Dashboard() {
       const res = await fetch("/api/chips/proxy-heal", { method: "POST" });
       const data = await res.json();
       setLastHeal({ healed: data.healed, unreachable: data.unreachable, timestamp: data.timestamp });
-      if (data.healed > 0) loadChips();
+      const quarantinedZombies: string[] = (data.zombie_detection?.zombies ?? [])
+        .filter((z: { quarantined?: boolean }) => z.quarantined)
+        .map((z: { name: string }) => z.name);
+      if (data.healed > 0 || quarantinedZombies.length > 0) loadChips();
       // Marcar chips stale como "close" no estado local imediatamente
       if (data.staleDetected && data.staleDetected.length > 0) {
         const staleSet = new Set(data.staleDetected as string[]);
         setChips(prev => prev.map(c =>
           staleSet.has(c.name) ? { ...c, connectionStatus: "connecting" } : c
         ));
+      }
+      // Mantem chips quarentenados no badge zombie — pro caso de deep zombie
+      // (Evolution recusa flippar pra `close`), o card precisa continuar
+      // mostrando "Fechado" via o flag zombie. Proximo /api/chips/probe (3min)
+      // confirma se o chip recuperou ou permanece morto.
+      if (quarantinedZombies.length > 0) {
+        setZombies(prev => {
+          const next = new Set(prev);
+          for (const n of quarantinedZombies) next.add(n);
+          return next;
+        });
       }
     } catch { /* silent */ }
   }, [loadChips]);
@@ -196,15 +210,22 @@ export default function Dashboard() {
     loadChips();
   }
 
-  const online = chips.filter((c) => c.connectionStatus === "open").length;
+  // Zombies contam como offline (chip morto, inbox removido, precisa Reconectar)
+  const online = chips.filter((c) => c.connectionStatus === "open" && !zombies.has(c.name)).length;
   const connecting = chips.filter((c) => c.connectionStatus === "connecting").length;
-  const offline = chips.filter((c) => c.connectionStatus !== "open" && c.connectionStatus !== "connecting").length;
+  const offline = chips.length - online - connecting;
 
-  // Ordena chips: Online primeiro, Connecting depois, Close por ultimo.
+  // Ordena chips: Online primeiro, Connecting depois, Close (inclui zombie) por ultimo.
   // Dentro de cada grupo, ordem alfabetica por nome — facilita achar.
-  const statusRank = (s: string) => (s === "open" ? 0 : s === "connecting" ? 1 : 2);
+  // Zombie e tratado como close pra UX: o chip esta efetivamente fora.
+  const statusRank = (c: Chip) => {
+    if (zombies.has(c.name)) return 2;
+    if (c.connectionStatus === "open") return 0;
+    if (c.connectionStatus === "connecting") return 1;
+    return 2;
+  };
   const sortedChips = [...chips].sort((a, b) => {
-    const r = statusRank(a.connectionStatus) - statusRank(b.connectionStatus);
+    const r = statusRank(a) - statusRank(b);
     if (r !== 0) return r;
     return a.name.localeCompare(b.name);
   });

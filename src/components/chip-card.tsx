@@ -55,9 +55,13 @@ export function ChipCard({
   onDelete,
   onReconnect,
 }: ChipCardProps) {
-  const isOnline = status === "open";
+  // Zombie e tratado como close pra UX: chip esta efetivamente fora
+  // (sessao Baileys morta, inbox removido). Quarentena pode ainda nao ter
+  // conseguido flippar o status no Evolution (deep zombie), mas pro user
+  // o chip e inutil e precisa Reconectar.
+  const isOnline = status === "open" && !zombie;
   const isConnecting = status === "connecting";
-  const isClosed = status === "close";
+  const isClosed = status === "close" || zombie;
   const [proxyIp, setProxyIp] = useState<ProxyIpResult | null>(null);
   const [checkingIp, setCheckingIp] = useState(false);
   const [ipError, setIpError] = useState(false);
@@ -87,13 +91,11 @@ export function ChipCard({
   return (
     <div
       className={`group rounded-xl border p-5 transition-all ${
-        zombie && isOnline
-          ? "border-red-500/40 bg-zinc-900/80 ring-1 ring-red-500/20"
-          : isOnline
-            ? "border-emerald-500/15 bg-zinc-900/80"
-            : isConnecting
-              ? "border-amber-500/15 bg-zinc-900/80"
-              : "border-red-500/15 bg-zinc-900/80"
+        isOnline
+          ? "border-emerald-500/15 bg-zinc-900/80"
+          : isConnecting
+            ? "border-amber-500/15 bg-zinc-900/80"
+            : "border-red-500/15 bg-zinc-900/80"
       }`}
     >
       <div className="flex items-start justify-between">
@@ -116,26 +118,24 @@ export function ChipCard({
         </div>
         <span
           className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
-            zombie && isOnline
-              ? "bg-red-500/15 text-red-400"
-              : isOnline
-                ? "bg-emerald-500/15 text-emerald-400"
-                : isConnecting
-                  ? "bg-amber-500/15 text-amber-400"
-                  : "bg-red-500/15 text-red-400"
+            isOnline
+              ? "bg-emerald-500/15 text-emerald-400"
+              : isConnecting
+                ? "bg-amber-500/15 text-amber-400"
+                : "bg-red-500/15 text-red-400"
           }`}
         >
-          {zombie && isOnline ? "Zombie" : isOnline ? "Online" : isConnecting ? "Conectando..." : status || "Offline"}
+          {isOnline ? "Online" : isConnecting ? "Conectando..." : zombie ? "Fechado" : status || "Offline"}
         </span>
       </div>
 
-      {zombie && isOnline && (
+      {zombie && (
         <div className="mt-3 flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-950/30 px-3 py-2 text-xs">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400" />
           <div className="flex-1">
-            <p className="font-medium text-red-400">Sessao Baileys morta</p>
+            <p className="font-medium text-red-400">Sessao Baileys morta — chip quarentenado</p>
             <p className="mt-0.5 text-red-400/70">
-              Chip aparece online mas nao envia mensagens. Auto-restart ja tentou. Clica em <span className="font-semibold">Reconectar</span> pra parear de novo.
+              Inbox removido do Chatwoot pra agentes nao usarem. Clica em <span className="font-semibold">Reconectar</span> pra parear de novo.
             </p>
           </div>
         </div>
