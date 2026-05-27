@@ -54,18 +54,6 @@ export default function Dashboard() {
     }
   }, []);
 
-  const loadZombies = useCallback(async () => {
-    try {
-      const res = await fetch("/api/chips/probe");
-      if (!res.ok) return;
-      const data = await res.json();
-      const list = (data.zombies ?? []) as Array<{ name: string }>;
-      setZombies(new Set(list.map((z) => z.name)));
-    } catch {
-      /* probe nao critico — falha silenciosa */
-    }
-  }, []);
-
   const loadHealth = useCallback(async () => {
     try {
       const res = await fetch("/api/health");
@@ -87,52 +75,53 @@ export default function Dashboard() {
       const res = await fetch("/api/chips/proxy-heal", { method: "POST" });
       const data = await res.json();
       setLastHeal({ healed: data.healed, unreachable: data.unreachable, timestamp: data.timestamp });
-      const quarantinedZombies: string[] = (data.zombie_detection?.zombies ?? [])
-        .filter((z: { quarantined?: boolean }) => z.quarantined)
-        .map((z: { name: string }) => z.name);
+      const allZombies = (data.zombie_detection?.zombies ?? []) as Array<{ name: string; quarantined?: boolean }>;
+      const quarantinedZombies = allZombies.filter((z) => z.quarantined).map((z) => z.name);
       if (data.healed > 0 || quarantinedZombies.length > 0) loadChips();
-      // Marcar chips stale como "close" no estado local imediatamente
-      if (data.staleDetected && data.staleDetected.length > 0) {
-        const staleSet = new Set(data.staleDetected as string[]);
+      // Stale detection: marca local como connecting pra feedback imediato
+      if (Array.isArray(data.stale_detected) && data.stale_detected.length > 0) {
+        const staleSet = new Set(data.stale_detected as string[]);
         setChips(prev => prev.map(c =>
           staleSet.has(c.name) ? { ...c, connectionStatus: "connecting" } : c
         ));
       }
-      // Mantem chips quarentenados no badge zombie — pro caso de deep zombie
-      // (Evolution recusa flippar pra `close`), o card precisa continuar
-      // mostrando "Fechado" via o flag zombie. Proximo /api/chips/probe (3min)
-      // confirma se o chip recuperou ou permanece morto.
-      if (quarantinedZombies.length > 0) {
-        setZombies(prev => {
-          const next = new Set(prev);
-          for (const n of quarantinedZombies) next.add(n);
-          return next;
-        });
-      }
+      // Substitui o set inteiro de zombies pelo resultado do heal: chips que
+      // recuperaram saem do set, quarentenados entram. Sem o probe standalone,
+      // essa e a unica fonte de verdade pro UI.
+      setZombies(new Set(quarantinedZombies));
     } catch { /* silent */ }
   }, [loadChips]);
+
+  const runWmiResolve = useCallback(async () => {
+    try {
+      // Endpoint separado do heal (mexe so em Chatwoot, nao toca chip).
+      // Frequencia menor (30min vs 15min do heal) pra evitar sobrecarga.
+      await fetch("/api/chips/wmi-resolve", { method: "POST" });
+    } catch { /* silent */ }
+  }, []);
 
   useEffect(() => {
     if (status !== "authenticated") return;
     loadChips();
     loadHealth();
+    // Refresh leve (UI-only): chips + health a cada 30s
     const refresh = setInterval(() => { loadChips(); loadHealth(); }, 30000);
-    // Auto-heal proxies a cada 5 minutos
-    const healTimer = setTimeout(() => runProxyHeal(), 10000); // primeira vez 10s após load
-    const healInterval = setInterval(runProxyHeal, 5 * 60 * 1000);
-    // Zombie probe: detecta chips com sessao Baileys morta (UI open, WS interno
-    // morto). Probe leva 5-15s por chip, roda em paralelo. Primeiro check 15s
-    // apos load (dá tempo dos chips carregarem), depois a cada 3min.
-    const zombieTimer = setTimeout(loadZombies, 15000);
-    const zombieInterval = setInterval(loadZombies, 3 * 60 * 1000);
+    // Heal cycle: agora a cada 15min (era 5min). Histerese 2x dentro do heal
+    // evita falso-positivo de lag transitorio. Probe de zombie ja roda dentro
+    // do heal (Phase 3), nao precisa mais do /api/chips/probe standalone.
+    const healTimer = setTimeout(() => runProxyHeal(), 10000);
+    const healInterval = setInterval(runProxyHeal, 15 * 60 * 1000);
+    // WMI resolve em endpoint separado, frequencia menor (30min). Nao toca chip.
+    const wmiTimer = setTimeout(() => runWmiResolve(), 30000);
+    const wmiInterval = setInterval(runWmiResolve, 30 * 60 * 1000);
     return () => {
       clearInterval(refresh);
       clearTimeout(healTimer);
       clearInterval(healInterval);
-      clearTimeout(zombieTimer);
-      clearInterval(zombieInterval);
+      clearTimeout(wmiTimer);
+      clearInterval(wmiInterval);
     };
-  }, [status, loadChips, loadHealth, loadZombies, runProxyHeal]);
+  }, [status, loadChips, loadHealth, runProxyHeal, runWmiResolve]);
 
   if (status === "loading" || status === "unauthenticated") {
     return (

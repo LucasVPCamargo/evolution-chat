@@ -12,31 +12,32 @@ import {
 } from "@/lib/evolution";
 import { checkProxyForInstance } from "@/lib/health";
 import { generateProxy } from "@/lib/marketbet";
-import {
-  createInbox,
-  deleteInbox,
-  listInboxes,
-  addAllAgentsToInbox,
-  resolveWmiConversations,
-} from "@/lib/chatwoot";
+import { deleteInbox, listInboxes } from "@/lib/chatwoot";
 import { quarantineZombie, type QuarantineResult } from "@/lib/quarantine";
+import { log } from "@/lib/log";
 
-// Roda a cada 30min via Vercel Cron + pode ser triggado manualmente da UI.
-// Acoes:
-// 1) Chip online SEM proxy enabled  -> aplica MARKETBET (env vars) + restart
-// 2) Chip online COM proxy mas teste IP falha:
-//    - se manual e nao bate IP esperado -> reaplica MARKETBET + restart
-//    - se IPRoyal -> rotaciona session
-// 3) Chip reportado open mas getConnectionState diz outra coisa -> restart
+// Proxy-heal: triggado da UI a cada 15min ou via Vercel Cron.
 //
-// MARKETBET vem de env: MARKETBET_PROXY_HOST/PORT/USERNAME/PASSWORD. Sem essas
-// envs, healing de orfaos cai pro IPRoyal default (env PROXY_*).
+// Diferenca pro ciclo antigo (5min, agressivo): adicionamos histerese — toda
+// acao mutativa (restart, heal, quarentena) exige 2 ciclos consecutivos de
+// falha antes de disparar. Reduz falso-positivos de lag transitorio de
+// marketbet/ip-api.com.
+//
+// Fases:
+//  1) Stale check (getConnectionState)        → restart apos 2x stale
+//  2) Proxy health (checkProxyForInstance)    → reheal apos 2x failed (orfao = imediato)
+//  3) Zombie probe (probeChipSession)         → quarentena apos 2x zombie nao-recuperado
+//  4) Inbox cleanup (orphans + close)         → idempotente, sem mutacao no chip
+//
+// REMOVIDO desta cycle vs anterior:
+//  - Phase 4.3 recreate inbox: dead code (so disparava em zombies, agora skipados)
+//  - Phase 4.4 resolveWmiConversations: movido pra /api/chips/wmi-resolve (30min)
 
 export const maxDuration = 60;
 
 interface HealResult {
   name: string;
-  status: "healthy" | "healed" | "orphan_healed" | "restarted" | "unreachable" | "skipped";
+  status: "healthy" | "healed" | "orphan_healed" | "restarted" | "unreachable" | "skipped" | "pending_hysteresis";
   ip?: string;
   city?: string;
   oldSession?: string;
@@ -46,6 +47,29 @@ interface HealResult {
 
 const STATE_CHECK_CONCURRENCY = 5;
 const HEAL_CONCURRENCY = 3;
+const HYSTERESIS_THRESHOLD = 2; // requires N consecutive cycles of same failure to act
+
+// Estado de histerese: persiste durante a vida da funcao Vercel "warm".
+// Cold start zera tudo, o que e ok — significa que precisamos de 2 ciclos
+// completos pra agir. Conservador propositalmente.
+//
+// Cada chip pode acumular contadores independentes pra cada tipo de falha.
+// Sucesso (chip saudavel) zera o contador correspondente.
+interface ChipHysteresis {
+  stale: number;        // Phase 1
+  proxy_failed: number; // Phase 2
+  zombie: number;       // Phase 3
+}
+const hysteresis = new Map<string, ChipHysteresis>();
+
+function getHyst(name: string): ChipHysteresis {
+  let h = hysteresis.get(name);
+  if (!h) {
+    h = { stale: 0, proxy_failed: 0, zombie: 0 };
+    hysteresis.set(name, h);
+  }
+  return h;
+}
 
 function getMarketbetProxy(): ManualProxy | null {
   const host = process.env.MARKETBET_PROXY_HOST;
@@ -71,7 +95,6 @@ async function mapBatched<T, R>(items: T[], limit: number, fn: (item: T) => Prom
 
 async function healOrphan(name: string, marketbetEnv: ManualProxy | null): Promise<HealResult> {
   try {
-    // Preferencia: API marketbet (proxy dedicado fresh). Fallback: env hardcoded.
     let proxy: ManualProxy;
     try {
       const fresh = await generateProxy({ tipo: "fixo", country: "br" });
@@ -90,18 +113,16 @@ async function healOrphan(name: string, marketbetEnv: ManualProxy | null): Promi
     }
 
     await setProxy(name, proxy);
-    // Verifica que persistiu
     await new Promise((r) => setTimeout(r, 400));
     const conf = await findProxy(name);
     if (!conf?.enabled) {
       return { name, status: "unreachable", detail: "proxy not persisted" };
     }
-    // Restart pra Baileys reconectar via proxy
     await restartInstance(name);
-    // Aguarda + testa
     await new Promise((r) => setTimeout(r, 6000));
     const check = await checkProxyForInstance(name, conf);
     if (check && check.country === "BR") {
+      log("heal.phase2.orphan_healed", { chip: name, ip: check.ip, city: check.city });
       return { name, status: "orphan_healed", ip: check.ip, city: check.city };
     }
     return { name, status: "unreachable", detail: "proxy test failed after heal" };
@@ -114,9 +135,13 @@ async function handle(req: NextRequest) {
   const denied = await requireAuthOrCron(req);
   if (denied) return denied;
 
+  const cycleStart = Date.now();
+  log("heal.cycle_start", { hysteresis_size: hysteresis.size });
+
   try {
     const instances = await fetchInstances();
     if (!Array.isArray(instances)) {
+      log("heal.fatal", { error: "fetchInstances did not return array" });
       return NextResponse.json({ error: "Failed to fetch instances" }, { status: 500 });
     }
 
@@ -126,54 +151,99 @@ async function handle(req: NextRequest) {
     );
 
     const staleChips: string[] = [];
+    const staleSkipped: string[] = []; // detected but waiting for hysteresis
     const restartedChips: string[] = [];
     const onlineChips: Record<string, unknown>[] = [];
 
-    // Fase 1: verifica estado real (alguns reportam "open" mas Baileys ja caiu)
+    // ============================================================
+    // FASE 1 — Stale state detection (com histerese)
+    // ============================================================
     await mapBatched(reportedOnline as Record<string, unknown>[], STATE_CHECK_CONCURRENCY, async (chip) => {
       const name = chip.name as string;
+      const h = getHyst(name);
       try {
         const state = await getConnectionState(name);
         const actualState = state?.instance?.state || state?.state;
         if (actualState && actualState !== "open") {
-          staleChips.push(name);
-          try {
-            await restartInstance(name);
-            restartedChips.push(name);
-          } catch { /* silent */ }
+          h.stale++;
+          log("heal.phase1.stale_detected", { chip: name, actualState, count: h.stale, threshold: HYSTERESIS_THRESHOLD });
+          if (h.stale >= HYSTERESIS_THRESHOLD) {
+            staleChips.push(name);
+            try {
+              await restartInstance(name);
+              restartedChips.push(name);
+              log("heal.phase1.stale_restarted", { chip: name, count: h.stale });
+              h.stale = 0; // reset apos acao
+            } catch (e) {
+              log("heal.phase1.stale_restart_failed", { chip: name, error: String(e).slice(0, 150) });
+            }
+          } else {
+            staleSkipped.push(name);
+            log("heal.phase1.stale_skipped_hysteresis", { chip: name, count: h.stale, threshold: HYSTERESIS_THRESHOLD });
+            // adiciona pra Phase 2 mesmo assim — chip que pode ser stale ainda
+            // precisa verificacao de proxy se reportou open
+            onlineChips.push(chip);
+          }
         } else {
+          if (h.stale > 0) {
+            log("heal.phase1.stale_recovered", { chip: name, previous_count: h.stale });
+            h.stale = 0;
+          }
           onlineChips.push(chip);
         }
-      } catch {
+      } catch (e) {
+        log("heal.phase1.state_check_error", { chip: name, error: String(e).slice(0, 100) });
         onlineChips.push(chip);
       }
     });
 
-    // Fase 2: pra cada chip realmente online, verifica/heal o proxy
+    // ============================================================
+    // FASE 2 — Proxy health (com histerese pra failed; orfao = imediato)
+    // ============================================================
     const results: HealResult[] = await mapBatched(onlineChips, HEAL_CONCURRENCY, async (chip) => {
       const name = chip.name as string;
       const proxy = chip.Proxy as { enabled: boolean } | null;
+      const h = getHyst(name);
 
-      // Caso 1: ORFAO — chip sem proxy. Aplica heal proxy + restart.
+      // Caso 1: ORFAO — sem proxy. Sem histerese, heal imediato.
       if (!proxy?.enabled) {
+        log("heal.phase2.orphan", { chip: name });
         return await healOrphan(name, marketbet);
       }
 
-      // Caso 2: tem proxy. Testa se esta funcionando.
+      // Caso 2: tem proxy. Testa se funciona.
       try {
         const proxyConfig = await findProxy(name);
         const check = await checkProxyForInstance(name, proxyConfig);
 
         if (check && check.country === "BR") {
+          if (h.proxy_failed > 0) {
+            log("heal.phase2.proxy_recovered", { chip: name, previous_count: h.proxy_failed, ip: check.ip });
+            h.proxy_failed = 0;
+          }
           return { name, status: "healthy", ip: check.ip, city: check.city };
         }
 
-        // Proxy nao passou no teste. Se for manual, tenta reaplicar marketbet.
+        // Proxy falhou no teste.
+        h.proxy_failed++;
+        log("heal.phase2.proxy_failed", {
+          chip: name,
+          country: check?.country ?? "unreachable",
+          count: h.proxy_failed,
+          threshold: HYSTERESIS_THRESHOLD,
+        });
+
+        if (h.proxy_failed < HYSTERESIS_THRESHOLD) {
+          log("heal.phase2.proxy_skipped_hysteresis", { chip: name, count: h.proxy_failed });
+          return { name, status: "pending_hysteresis", detail: `proxy_failed count=${h.proxy_failed}/${HYSTERESIS_THRESHOLD}` };
+        }
+
+        // Atingiu threshold: heal de verdade.
         const isIPRoyal = proxyConfig?.host === process.env.PROXY_HOST;
 
         if (!isIPRoyal) {
-          // Manual ou desconhecido — tenta marketbet (ou IPRoyal se nao tem env)
           if (marketbet) {
+            log("heal.phase2.reapply_marketbet", { chip: name });
             await setProxy(name, marketbet);
             await new Promise((r) => setTimeout(r, 400));
             await restartInstance(name);
@@ -181,19 +251,24 @@ async function handle(req: NextRequest) {
             const newConf = await findProxy(name);
             const recheck = await checkProxyForInstance(name, newConf);
             if (recheck && recheck.country === "BR") {
+              log("heal.phase2.healed", { chip: name, ip: recheck.ip, city: recheck.city });
+              h.proxy_failed = 0;
               return { name, status: "healed", ip: recheck.ip, city: recheck.city };
             }
           }
+          log("heal.phase2.unreachable", { chip: name, detail: "manual proxy failed, heal nao resolveu" });
           return { name, status: "unreachable", detail: "manual proxy failed, heal nao resolveu" };
         }
 
-        // IPRoyal saturado/lento — rotaciona session (setProxy sem args gera nova session)
+        // IPRoyal — rotaciona session
         const oldPassword = proxyConfig?.password as string | undefined;
         const oldSession = oldPassword?.match(/session-(.+)$/)?.[1] || "unknown";
         await setProxy(name);
         const newConfig = await findProxy(name);
         const newSession = (newConfig?.password as string)?.match(/session-(.+)$/)?.[1] || "unknown";
         const recheck = await checkProxyForInstance(name, newConfig);
+        if (recheck) h.proxy_failed = 0;
+        log("heal.phase2.iproyal_rotated", { chip: name, oldSession, newSession, recheck_ok: !!recheck });
         return {
           name,
           status: recheck ? "healed" : "unreachable",
@@ -203,6 +278,7 @@ async function handle(req: NextRequest) {
           newSession,
         };
       } catch (e) {
+        log("heal.phase2.error", { chip: name, error: String(e).slice(0, 100) });
         return { name, status: "unreachable", detail: String(e).slice(0, 100) };
       }
     });
@@ -211,21 +287,10 @@ async function handle(req: NextRequest) {
     const healed = results.filter((r) => r.status === "healed").length;
     const orphanHealed = results.filter((r) => r.status === "orphan_healed").length;
     const unreachable = results.filter((r) => r.status === "unreachable").length;
+    const pendingHysteresis = results.filter((r) => r.status === "pending_hysteresis").length;
 
     // ============================================================
-    // FASE 3: Zombie detection — chip reportado open mas sessao Baileys morta.
-    // Acontece quando proxy residencial dropa por alguns segundos: Baileys perde
-    // sync de keys, WS continua up por minutos retornando erro, depois cai. UI
-    // mostra "open" o tempo todo. Sintoma: enviar msg pelo Chatwoot da "Connection
-    // Closed". Probe forca Baileys a fazer query — falhou = zombie.
-    // Recovery: tenta restart (raramente funciona). Se nao recuperar, QUARENTENA
-    // (logout + disable chatwoot + delete inbox) pra evitar agentes mandando msg
-    // que falha silenciosamente. Chip aparece como Fechado no dashboard e some do
-    // Chatwoot — user precisa Reconectar via UI.
-    //
-    // RODA ANTES da Fase 4 pra que a recriacao de inbox da Fase 4.3 saiba
-    // ignorar chips que acabaram de ser quarentenados (caso comum: deep zombie
-    // onde Evolution se recusa a flippar pra `close`, mas inbox foi removido).
+    // FASE 3 — Zombie detection + quarantine (com histerese)
     // ============================================================
     const zombieDetection = {
       probed: 0,
@@ -235,69 +300,123 @@ async function handle(req: NextRequest) {
         restartAttempted: boolean;
         recovered: boolean;
         quarantined: boolean;
+        hysteresis_count?: number;
         quarantine?: QuarantineResult["steps"];
       }>,
     };
     const quarantinedNames = new Set<string>();
 
+    // So probe chips que passaram pelo Phase 2 healthy/healed/orphan_healed.
+    // pending_hysteresis nao probe — proxy estava ruim, nao adianta probar.
     const probeTargets = results
       .filter((r) => r.status === "healthy" || r.status === "healed" || r.status === "orphan_healed")
       .map((r) => r.name);
 
     await mapBatched(probeTargets, STATE_CHECK_CONCURRENCY, async (name) => {
+      const h = getHyst(name);
       const probe = await probeChipSession(name);
       zombieDetection.probed++;
-      if (probe.alive) return;
-      // Sessao zombie detectada. Tenta restart como recovery primaria.
+      if (probe.alive) {
+        if (h.zombie > 0) {
+          log("heal.phase3.zombie_recovered", { chip: name, previous_count: h.zombie });
+          h.zombie = 0;
+        }
+        return;
+      }
+
+      h.zombie++;
+      log("heal.phase3.zombie_detected", {
+        chip: name,
+        reason: probe.reason,
+        count: h.zombie,
+        threshold: HYSTERESIS_THRESHOLD,
+      });
+
+      // Tenta restart como recovery primaria (sempre, mesmo abaixo do threshold)
       let recovered = false;
       let restartAttempted = false;
       try {
         await restartInstance(name);
         restartAttempted = true;
-        // Espera Baileys reconectar antes de re-probar
         await new Promise((r) => setTimeout(r, 8000));
         const reprobe = await probeChipSession(name);
         recovered = reprobe.alive;
-      } catch {
-        /* restart falhou — segue como zombie */
+        log("heal.phase3.restart_result", { chip: name, recovered });
+      } catch (e) {
+        log("heal.phase3.restart_error", { chip: name, error: String(e).slice(0, 100) });
       }
-      let quarantineSteps: QuarantineResult["steps"] | undefined;
-      if (!recovered) {
-        const q = await quarantineZombie(name);
-        quarantineSteps = q.steps;
-        quarantinedNames.add(name);
+
+      if (recovered) {
+        h.zombie = 0;
+        zombieDetection.zombies.push({
+          name,
+          reason: probe.reason,
+          restartAttempted,
+          recovered,
+          quarantined: false,
+          hysteresis_count: 0,
+        });
+        return;
       }
+
+      // Nao recuperou. Quarentena so se passar threshold.
+      if (h.zombie < HYSTERESIS_THRESHOLD) {
+        log("heal.phase3.zombie_skipped_hysteresis", { chip: name, count: h.zombie });
+        zombieDetection.zombies.push({
+          name,
+          reason: probe.reason,
+          restartAttempted,
+          recovered: false,
+          quarantined: false,
+          hysteresis_count: h.zombie,
+        });
+        return;
+      }
+
+      // Threshold atingido — quarentena de verdade.
+      log("heal.phase3.quarantining", { chip: name, count: h.zombie });
+      const q = await quarantineZombie(name);
+      quarantinedNames.add(name);
+      log("heal.phase3.quarantined", {
+        chip: name,
+        steps: {
+          disable_chatwoot: q.steps.disable_chatwoot.ok,
+          logout: q.steps.logout.ok,
+          delete_inbox: q.steps.delete_inbox.ok,
+        },
+      });
       zombieDetection.zombies.push({
         name,
         reason: probe.reason,
         restartAttempted,
-        recovered,
-        quarantined: !recovered,
-        quarantine: quarantineSteps,
+        recovered: false,
+        quarantined: true,
+        hysteresis_count: h.zombie,
+        quarantine: q.steps,
       });
+      // Nao zera o contador — chip continua quarentenado.
     });
 
     // ============================================================
-    // FASE 4: Cleanup de inboxes Chatwoot
-    // - Inbox de chip em close            -> disable integration + delete inbox
-    // - Inbox orfa (chip nao existe)       -> delete inbox
-    // - Chip online sem inbox              -> criar inbox + integrar Chatwoot
-    //   EXCETO chips quarentenados na Fase 3 — esses ficam sem inbox de proposito
-    // Tudo idempotente, seguro pra rodar varias vezes.
+    // FASE 4 — Inbox cleanup (Chatwoot only, sem tocar chip)
+    //   4.1 Delete inbox orfa (chip nao existe)
+    //   4.2 Delete inbox de chip em close + disable integration
+    //   4.3 Dedup (mesmo chip com varias inboxes)
+    // REMOVIDO: recreate inbox (Phase 4.3 antiga) — dead code agora que zombie
+    //          recreate e bloqueado. So se chip Online perdeu inbox por bug,
+    //          o setup manual via UI resolve.
+    // REMOVIDO: resolveWmiConversations — movido pra /api/chips/wmi-resolve
     // ============================================================
     const inboxCleanup = {
       orphans_deleted: [] as string[],
       close_inboxes_deleted: [] as string[],
       duplicates_deleted: [] as { chip: string; kept_id: number; deleted_ids: number[] }[],
-      inboxes_recreated: [] as string[],
-      wmi_resolved: [] as { chip: string; resolved: number; checked: number }[],
       errors: [] as { name: string; step: string; error: string }[],
     };
 
     try {
       const inboxData = await listInboxes();
       const allInboxes = (inboxData.payload ?? inboxData ?? []) as Array<{ id: number; name: string }>;
-      // Agrupa inboxes por chipName, pra detectar duplicatas (mesmo chip com varias inboxes)
       const inboxesByChip = new Map<string, Array<{ id: number; name: string }>>();
       for (const inb of allInboxes) {
         const m = (inb.name || "").match(/^WhatsApp\s*-\s*(.+)$/);
@@ -307,14 +426,13 @@ async function handle(req: NextRequest) {
         inboxesByChip.get(chipName)!.push(inb);
       }
 
-      // Dedup: mantem inbox com maior id (mais nova) e deleta as outras
+      // Dedup
       const inboxMap = new Map<string, { id: number; name: string }>();
       for (const [chipName, list] of inboxesByChip) {
         if (list.length === 1) {
           inboxMap.set(chipName, list[0]);
           continue;
         }
-        // 2+ inboxes mesmo chip — keep newest (highest id)
         list.sort((a, b) => b.id - a.id);
         const kept = list[0];
         const toDelete = list.slice(1);
@@ -329,6 +447,7 @@ async function handle(req: NextRequest) {
         }
         if (deletedIds.length > 0) {
           inboxCleanup.duplicates_deleted.push({ chip: chipName, kept_id: kept.id, deleted_ids: deletedIds });
+          log("heal.phase4.duplicates_deleted", { chip: chipName, kept_id: kept.id, count: deletedIds.length });
         }
         inboxMap.set(chipName, kept);
       }
@@ -338,26 +457,26 @@ async function handle(req: NextRequest) {
         chipsByName.set(c.name as string, c);
       }
 
-      // 1. Delete orfa inboxes (chip nao existe na Evolution)
+      // 4.1 Orfas
       for (const [chipName, inb] of inboxMap) {
         if (!chipsByName.has(chipName)) {
           try {
             await deleteInbox(inb.id);
             inboxCleanup.orphans_deleted.push(chipName);
             inboxMap.delete(chipName);
+            log("heal.phase4.orphan_deleted", { chip: chipName, inbox_id: inb.id });
           } catch (e) {
             inboxCleanup.errors.push({ name: chipName, step: "delete_orphan", error: String(e).slice(0, 100) });
           }
         }
       }
 
-      // 2. Delete inboxes de chips em close (com disable integration antes)
+      // 4.2 Close
       for (const [chipName, chip] of chipsByName) {
         if (chip.connectionStatus !== "close") continue;
         const inb = inboxMap.get(chipName);
         if (!inb) continue;
         try {
-          // Disable integration primeiro pra Evolution parar de postar
           await setChatwoot(chipName, false);
         } catch (e) {
           inboxCleanup.errors.push({ name: chipName, step: "disable_chatwoot", error: String(e).slice(0, 100) });
@@ -366,56 +485,37 @@ async function handle(req: NextRequest) {
           await deleteInbox(inb.id);
           inboxCleanup.close_inboxes_deleted.push(chipName);
           inboxMap.delete(chipName);
+          log("heal.phase4.close_inbox_deleted", { chip: chipName, inbox_id: inb.id });
         } catch (e) {
           inboxCleanup.errors.push({ name: chipName, step: "delete_close_inbox", error: String(e).slice(0, 100) });
         }
       }
-
-      // 3. Chips online sem inbox -> recriar. Pula quarentenados (Fase 3):
-      //    eles aparecem como `open` no Evolution mas estao mortos, recriar
-      //    o inbox so geraria loop entre Fase 3 e Fase 4 em cada heal cycle.
-      for (const chip of onlineChips) {
-        const chipName = chip.name as string;
-        if (inboxMap.has(chipName)) continue;
-        if (quarantinedNames.has(chipName)) {
-          inboxCleanup.errors.push({ name: chipName, step: "recreate_inbox", error: "skipped: quarantined zombie" });
-          continue;
-        }
-        try {
-          const inboxResult = await createInbox(chipName);
-          const inboxId = (inboxResult as { id?: number })?.id;
-          if (!inboxId) {
-            inboxCleanup.errors.push({ name: chipName, step: "create_inbox", error: "no id returned" });
-            continue;
-          }
-          // Adiciona todos agentes
-          try { await addAllAgentsToInbox(inboxId); } catch { /* nao critico */ }
-          // Re-habilita Chatwoot integration na Evolution apontando pra nova inbox
-          await setChatwoot(chipName, true);
-          inboxCleanup.inboxes_recreated.push(chipName);
-          inboxMap.set(chipName, { id: inboxId, name: `WhatsApp - ${chipName}` });
-        } catch (e) {
-          inboxCleanup.errors.push({ name: chipName, step: "recreate_inbox", error: String(e).slice(0, 100) });
-        }
-      }
-
-      // 4. Resolve conversas WMI (maturador de chips) em cada inbox ativo
-      for (const [chipName, inb] of inboxMap) {
-        try {
-          const res = await resolveWmiConversations(inb.id);
-          if (res.resolved > 0) {
-            inboxCleanup.wmi_resolved.push({ chip: chipName, resolved: res.resolved, checked: res.checked });
-          }
-        } catch (e) {
-          inboxCleanup.errors.push({ name: chipName, step: "wmi_resolve", error: String(e).slice(0, 100) });
-        }
-      }
     } catch (e) {
       inboxCleanup.errors.push({ name: "_general", step: "inbox_cleanup", error: String(e).slice(0, 200) });
+      log("heal.phase4.fatal", { error: String(e).slice(0, 200) });
     }
+
+    const duration = Date.now() - cycleStart;
+    log("heal.cycle_done", {
+      duration_ms: duration,
+      total: instances.length,
+      online: reportedOnline.length,
+      healthy,
+      healed,
+      orphan_healed: orphanHealed,
+      unreachable,
+      pending_hysteresis: pendingHysteresis,
+      stale_detected: staleChips.length,
+      stale_skipped: staleSkipped.length,
+      restarted: restartedChips.length,
+      zombies_total: zombieDetection.zombies.length,
+      zombies_quarantined: zombieDetection.zombies.filter((z) => z.quarantined).length,
+      hysteresis_size: hysteresis.size,
+    });
 
     return NextResponse.json({
       timestamp: new Date().toISOString(),
+      duration_ms: duration,
       total: instances.length,
       online: reportedOnline.length,
       checked: results.length,
@@ -423,14 +523,18 @@ async function handle(req: NextRequest) {
       healed,
       orphan_healed: orphanHealed,
       unreachable,
+      pending_hysteresis: pendingHysteresis,
       stale_detected: staleChips,
+      stale_skipped: staleSkipped,
       restarted: restartedChips,
       marketbet_configured: !!marketbet,
       inbox_cleanup: inboxCleanup,
       zombie_detection: zombieDetection,
+      hysteresis_threshold: HYSTERESIS_THRESHOLD,
       results,
     });
   } catch (error) {
+    log("heal.fatal", { error: String(error).slice(0, 300) });
     return NextResponse.json(
       { error: "Proxy heal failed", details: String(error).slice(0, 300) },
       { status: 500 }
@@ -438,9 +542,6 @@ async function handle(req: NextRequest) {
   }
 }
 
-// POST pra trigger manual (NextAuth) ou cron (Bearer CRON_SECRET).
-// GET pra Vercel Cron (que usa GET por default).
-// Next.js exige function declarations nomeadas, n\xC3\xA3o alias via const.
 export async function POST(req: NextRequest) {
   return handle(req);
 }
