@@ -1,0 +1,41 @@
+name: heal-cron
+
+# Cron externo de heal/manutencao dos chips.
+# O plano Vercel Hobby so dispara Vercel Cron 1x/dia, entao usamos GitHub
+# Actions (gratis) pra bater no endpoint a cada 15min.
+#
+# Pre-requisitos (configurar uma vez):
+#  1. Vercel  -> Settings > Environment Variables > Production:
+#       CRON_SECRET = <valor>            (redeploy depois)
+#  2. GitHub  -> Settings > Secrets and variables > Actions > New secret:
+#       CRON_SECRET = <mesmo valor>
+#
+# O endpoint /api/chips/proxy-heal aceita Authorization: Bearer <CRON_SECRET>
+# (ver requireAuthOrCron em src/lib/auth.ts).
+#
+# Obs: o agendador do GitHub Actions pode atrasar alguns minutos sob carga;
+# nao e relogio de precisao, mas cobre o heal periodico de sobra.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: heal-cron
+  cancel-in-progress: false
+
+jobs:
+  heal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: proxy-heal
+        run: |
+          curl -fsS -m 70 -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            https://evolution-chat.vercel.app/api/chips/proxy-heal | head -c 800 || true
+      - name: wmi-resolve
+        run: |
+          curl -fsS -m 70 -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            https://evolution-chat.vercel.app/api/chips/wmi-resolve | head -c 400 || true
