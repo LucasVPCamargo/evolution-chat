@@ -290,19 +290,21 @@ async function handle(req: NextRequest) {
     const pendingHysteresis = results.filter((r) => r.status === "pending_hysteresis").length;
 
     // ============================================================
-    // FASE 3 — Zombie detection + quarantine (com histerese)
+    // FASE 3 — Zombie detection + quarantine (com histerese + circuit breaker)
     // ============================================================
+    interface ZombieEntry {
+      name: string;
+      reason: string;
+      restartAttempted: boolean;
+      recovered: boolean;
+      quarantined: boolean;
+      hysteresis_count?: number;
+      quarantine?: QuarantineResult["steps"];
+    }
     const zombieDetection = {
       probed: 0,
-      zombies: [] as Array<{
-        name: string;
-        reason: string;
-        restartAttempted: boolean;
-        recovered: boolean;
-        quarantined: boolean;
-        hysteresis_count?: number;
-        quarantine?: QuarantineResult["steps"];
-      }>,
+      mass_failure: false,
+      zombies: [] as ZombieEntry[],
     };
     const quarantinedNames = new Set<string>();
 
@@ -311,6 +313,11 @@ async function handle(req: NextRequest) {
     const probeTargets = results
       .filter((r) => r.status === "healthy" || r.status === "healed" || r.status === "orphan_healed")
       .map((r) => r.name);
+
+    // Candidatos a quarentena (zombie nao-recuperado que passou histerese).
+    // NAO quarentenamos inline: coletamos primeiro pra aplicar o circuit breaker
+    // de falha em massa (decisao pos-loop, abaixo).
+    const quarantineCandidates: { name: string; entry: ZombieEntry }[] = [];
 
     await mapBatched(probeTargets, STATE_CHECK_CONCURRENCY, async (name) => {
       const h = getHyst(name);
@@ -373,29 +380,62 @@ async function handle(req: NextRequest) {
         return;
       }
 
-      // Threshold atingido — quarentena de verdade.
-      log("heal.phase3.quarantining", { chip: name, count: h.zombie });
-      const q = await quarantineZombie(name);
-      quarantinedNames.add(name);
-      log("heal.phase3.quarantined", {
-        chip: name,
-        steps: {
-          disable_chatwoot: q.steps.disable_chatwoot.ok,
-          logout: q.steps.logout.ok,
-          delete_inbox: q.steps.delete_inbox.ok,
-        },
-      });
-      zombieDetection.zombies.push({
+      // Threshold de histerese atingido + restart falhou → CANDIDATO a quarentena.
+      // A decisao final fica pro circuit breaker pos-loop (nao quarentena aqui).
+      const entry: ZombieEntry = {
         name,
         reason: probe.reason,
         restartAttempted,
         recovered: false,
-        quarantined: true,
+        quarantined: false,
         hysteresis_count: h.zombie,
-        quarantine: q.steps,
-      });
-      // Nao zera o contador — chip continua quarentenado.
+      };
+      zombieDetection.zombies.push(entry);
+      quarantineCandidates.push({ name, entry });
     });
+
+    // ----- Circuit breaker de falha em massa -----
+    // Se muitos chips precisariam de quarentena no MESMO ciclo, quase sempre e
+    // falha sistemica (container Evolution / proxy / push de versao do WhatsApp),
+    // NAO N zombies independentes. Quarentena em massa apaga os inboxes e desliga
+    // o Chatwoot de toda a frota — foi exatamente o teardown de 03/06/2026.
+    // Nesse caso abortamos a quarentena e so alertamos: o estado e recuperavel
+    // via restart do container (deep zombie), sem destruir a integracao.
+    const massThreshold = Number(process.env.HEAL_MASS_FAILURE_THRESHOLD) || 3;
+    const massRatioTrip =
+      probeTargets.length > 0 &&
+      quarantineCandidates.length >= Math.ceil(probeTargets.length * 0.5);
+    const massFailure =
+      quarantineCandidates.length >= massThreshold || massRatioTrip;
+
+    if (massFailure && quarantineCandidates.length > 0) {
+      zombieDetection.mass_failure = true;
+      log("heal.phase3.mass_failure_detected", {
+        candidates: quarantineCandidates.map((c) => c.name),
+        count: quarantineCandidates.length,
+        probed: probeTargets.length,
+        abs_threshold: massThreshold,
+        action: "quarantine_aborted",
+      });
+      // Nao zera histerese: continua contando pra agir quando voltar ao normal.
+    } else {
+      for (const { name, entry } of quarantineCandidates) {
+        log("heal.phase3.quarantining", { chip: name, count: getHyst(name).zombie });
+        const q = await quarantineZombie(name);
+        quarantinedNames.add(name);
+        log("heal.phase3.quarantined", {
+          chip: name,
+          steps: {
+            disable_chatwoot: q.steps.disable_chatwoot.ok,
+            logout: q.steps.logout.ok,
+            delete_inbox: q.steps.delete_inbox.ok,
+          },
+        });
+        entry.quarantined = true;
+        entry.quarantine = q.steps;
+        // Nao zera o contador — chip continua quarentenado.
+      }
+    }
 
     // ============================================================
     // FASE 4 — Inbox cleanup (Chatwoot only, sem tocar chip)
@@ -510,6 +550,7 @@ async function handle(req: NextRequest) {
       restarted: restartedChips.length,
       zombies_total: zombieDetection.zombies.length,
       zombies_quarantined: zombieDetection.zombies.filter((z) => z.quarantined).length,
+      mass_failure: zombieDetection.mass_failure,
       hysteresis_size: hysteresis.size,
     });
 
