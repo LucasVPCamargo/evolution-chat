@@ -34,6 +34,12 @@ yarn-error.log*
 .env*
 !.env.example
 
+# infra secrets (NUNCA commitar) — só os .example vão pro git
+/infra/.env
+/infra/chatwoot.env
+!/infra/.env.example
+!/infra/chatwoot.env.example
+
 # vercel
 .vercel
 

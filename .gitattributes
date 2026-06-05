@@ -1,0 +1,5 @@
+# Arquivos que rodam no servidor Linux DEVEM manter LF (CRLF quebra o bash/cloud-init)
+infra/**           text eol=lf
+*.sh               text eol=lf
+*.yaml             text eol=lf
+*.yml              text eol=lf

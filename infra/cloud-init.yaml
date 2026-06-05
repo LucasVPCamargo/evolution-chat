@@ -1,0 +1,46 @@
+#cloud-config
+# Provisionamento do novo servidor Hetzner (Ubuntu 24.04).
+# Passado via --user-data na criação. Instala Docker, configura firewall e swap.
+# Os arquivos da stack (com segredos) são copiados via scp DEPOIS do boot —
+# nunca pelo cloud-init, pra não vazarem nos logs.
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - ca-certificates
+  - curl
+  - ufw
+  - fail2ban
+
+write_files:
+  - path: /etc/sysctl.d/99-evolution.conf
+    content: |
+      vm.swappiness=10
+      net.core.somaxconn=1024
+
+runcmd:
+  # --- Docker (repo oficial) ---
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - systemctl enable --now docker
+
+  # --- Swap de 4GB (cx33 tem 8GB RAM; folga p/ picos do Chatwoot/Rails) ---
+  - fallocate -l 4G /swapfile
+  - chmod 600 /swapfile
+  - mkswap /swapfile
+  - swapon /swapfile
+  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+  # --- Firewall: SSH + Evolution(8080) + Chatwoot(3000) ---
+  - ufw allow 22/tcp
+  - ufw allow 8080/tcp
+  - ufw allow 3000/tcp
+  - ufw --force enable
+
+  # --- Pasta da stack ---
+  - mkdir -p /opt/evolution-chat
