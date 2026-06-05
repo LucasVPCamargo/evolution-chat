@@ -10,7 +10,8 @@ cd "$(dirname "$0")"
 echo "==> Verificando .env e chatwoot.env..."
 test -f .env || { echo "ERRO: .env não existe (copie de .env.example)"; exit 1; }
 test -f chatwoot.env || { echo "ERRO: chatwoot.env não existe"; exit 1; }
-grep -q "CHANGE_ME" .env chatwoot.env && { echo "ERRO: ainda há CHANGE_ME nos envs. Preencha o IP do servidor."; exit 1; } || true
+# Só falha se CHANGE_ME aparecer numa linha de valor (ignora comentários iniciados por #)
+grep -Eq "^[^#]*CHANGE_ME" .env chatwoot.env && { echo "ERRO: ainda há CHANGE_ME nos envs. Preencha o IP do servidor."; exit 1; } || true
 
 echo "==> Subindo Postgres e Redis primeiro..."
 docker compose --env-file .env up -d postgres redis
