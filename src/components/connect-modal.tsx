@@ -312,7 +312,7 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
                   }`}
                 >
                   <Shield className="mx-auto mb-1 h-4 w-4" />
-                  Auto (marketbet)
+                  Automático
                 </button>
                 <button
                   type="button"
@@ -330,7 +330,7 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
               </div>
               {proxyMode === "auto" ? (
                 <p className="text-xs text-emerald-300/70">
-                  Proxy residencial brasileiro (marketbet) configurado automaticamente
+                  Proxy residencial BR (IPRoyal) do servidor — configurado automaticamente
                 </p>
               ) : (
                 <div>
@@ -358,7 +358,7 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
                     )}
                   </div>
                   <p className="mt-1 text-xs text-zinc-500">
-                    Proxy dedicado da API marketbet — IP unico por chip. Clique no botao pra gerar outro.
+                    Proxy dedicado opcional (host:porta:usuario:senha) — sobrepoe o proxy padrao (IPRoyal) do servidor.
                   </p>
                 </div>
               )}
@@ -403,7 +403,7 @@ export function ConnectModal({ onClose, onSuccess }: ConnectModalProps) {
               <Shield className="h-4 w-4 shrink-0 text-emerald-400" />
               <p className="text-xs text-emerald-300">
                 {proxyMode === "auto"
-                  ? "Proxy residencial BR (marketbet) sera configurado automaticamente"
+                  ? "Proxy residencial BR (IPRoyal) do servidor"
                   : `Proxy manual: ${manualProxyStr.split(":").slice(0, 2).join(":")}`}
               </p>
             </div>
